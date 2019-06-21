@@ -24,9 +24,10 @@ func NewPromise(pool *Pool, process Process) *Promise {
 
 type Process struct {
 	EventKey int
+	Partition bool
 	Process ProcessFunc
 	Middles []Middle
-	Append bool // override or append
+	OverrideMiddles  bool // override or append
 }
 
 type errData struct {
@@ -40,6 +41,7 @@ type ExceptionProcess struct {
 	Process ExceptionProcessFunc
 	Middles []Middle
 	Append bool // override or append
+	Partition bool
 }
 
 func (fp ExceptionProcess) process(ctx context.Context, last interface{}) (interface{}, error) {
@@ -50,6 +52,7 @@ func (fp ExceptionProcess) process(ctx context.Context, last interface{}) (inter
 func (fp ExceptionProcess) toProcess() Process {
 	return Process{
 		fp.EventKey,
+		fp.Partition,
 		fp.process,
 		fp.Middles,
 		fp.Append,
@@ -88,9 +91,11 @@ func (p *Promise) RecoverAndRetry(recover ExceptionProcess) *Promise {
 	return p
 }
 
-func (p *Promise) Get(ctx context.Context) (interface{}, error) {
-	p.Start()
-
+func (p *Promise) Get(ctx context.Context, close bool) (interface{}, error) {
+	p.Start(ctx)
+	if close {
+		defer p.Close()
+	}
 	select {
 	case <- ctx.Done():
 		return nil, ctx.Err()
@@ -111,20 +116,23 @@ func (p *Promise) IsClosed() bool {
 }
 
 // wait all sub route finish or closed
-func (p *Promise) Wait(ctx context.Context) error {
-	p.Start()
-	return p.waitClose(ctx)
+func (p *Promise) Wait(ctx context.Context, close bool) error {
+	if close {
+		defer p.Close()
+	}
+	p.Start(ctx)
+	err := p.waitClose(ctx)
+	return err
 }
 
 // Try start, if chan is started or closed return false, other return true
-func (p *Promise) Start() bool {
-	return p.chanStatus.tryStart()
+func (p *Promise) Start(ctx context.Context) bool {
+	return p.chanStatus.tryStart(ctx)
 }
 
 // close will close all parent or sub future
-func (p *Promise) Close() error {
+func (p *Promise) Close() {
 	p.chanStatus.close(nil, nil)
-	return nil
 }
 
 func (p *Promise) setNext(ps Process, success bool) *Promise {
@@ -150,16 +158,24 @@ func (p *Promise) setNext(ps Process, success bool) *Promise {
 	return ret
 }
 
-func (p *Promise) newTaskBox(taskFunc TaskFunc) taskBox {
-	return taskBox{
+func (p *Promise) newTaskBox(taskFunc TaskFunc) TaskBox {
+
+	task := TaskBox {
 		closed: p.closeChan,
 		f:      taskFunc,
 	}
+
+	if p.process.Partition {
+		task.stubborn = true
+		task.localId = int(p.eventKey)
+	}
+
+	return task
 }
 
-func (p *Promise) post(last interface{}) error {
+func (p *Promise) post(ctx context.Context, last interface{}) error {
 	dp := p.doProcess
-	return p.pool.feedAnyway(p.newTaskBox(func(ctx context.Context) {
+	return p.pool.Feed(ctx, p.newTaskBox(func(ctx context.Context, localId int) {
 		dp(ctx, last)
 	}))
 }
@@ -198,7 +214,7 @@ func (p *Promise) doProcess(ctx context.Context, last interface{}) {
 
 	if err != nil {
 		if exception := p.exception; exception != nil {
-			err = exception.post(errData{
+			err = exception.post(ctx, errData{
 				last, err,
 			})
 			if err != nil {
@@ -214,7 +230,7 @@ func (p *Promise) doProcess(ctx context.Context, last interface{}) {
 		p.close(err, v)
 		return
 	}
-	err = next.post(v)
+	err = next.post(ctx, v)
 	if err != nil {
 		p.chanStatus.close(err, v)
 	}
@@ -232,7 +248,7 @@ func fromPromise(from *Promise, process Process) *Promise {
 		if from.process.Middles == nil {
 			p.process.Middles = append(([]Middle)(nil), process.Middles...)
 		}
-		if process.Append && from.process.Middles != nil {
+		if (!process.OverrideMiddles) && from.process.Middles != nil {
 			p.process.Middles = append(p.process.Middles, from.process.Middles...)
 		}
 	}
@@ -288,7 +304,10 @@ func (s *chanStatus) isStarted() bool {
 }
 
 // return already or closed
-func (s *chanStatus) tryStart() bool {
+func (s *chanStatus) tryStart(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	s.mu.Lock()
 	if s.isClosed() {
 		s.mu.Unlock()
@@ -299,7 +318,7 @@ func (s *chanStatus) tryStart() bool {
 		return false
 	}
 	s.started = true
-	err := s.root.post(nil)
+	err := s.root.post(ctx, nil)
 	s.mu.Unlock()
 	if err != nil {
 		s.close(err, nil)

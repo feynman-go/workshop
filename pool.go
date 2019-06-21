@@ -2,6 +2,7 @@ package workshop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"runtime/debug"
@@ -9,9 +10,10 @@ import (
 	"sync/atomic"
 )
 
-type TaskFunc func(ctx context.Context)
+type TaskFunc func(ctx context.Context, localId int)
 
 type Pool struct {
+	status int32
 	max     int
 	offset  uintptr
 	workers *sync.Map
@@ -29,40 +31,103 @@ func NewPool(maxConcurrent int) *Pool {
 			New: func() interface{} {
 				return &worker{
 					closed: closed,
-					c: make(chan taskBox, 1),
+					c: make(chan TaskBox),
 				}
 			},
 		},
 	}
+	pool.startWorkers()
 	return pool
 }
 
-func (pool *Pool) feedAnyway(box taskBox) error {
-	var ct int
-	for ct < pool.max {
-		id := atomic.AddUintptr(&pool.offset, 1)
-		if pool.tryFeed(box, int(id)) {
-			return nil
-		}
-		ct++
-	}
-	return fmt.Errorf("over max feed times %v", ct)
+func (pool *Pool) MaxLocalID() int {
+	return pool.max
 }
 
-func (pool *Pool) tryFeed(box taskBox, id int) bool {
-	var cn = pool.getWorker(id)
+func (pool *Pool) Feed(ctx context.Context, box TaskBox) error {
+	if box.stubborn {
+		if !pool.tryFeedBlock(ctx, box, box.localId) {
+			return errors.New("feed block")
+		}
+	} else {
+		id := atomic.AddUintptr(&pool.offset, 1)
+		if pool.tryFeedBlock(ctx, box, int(id)) {
+			return nil
+		}
+	}
+	return nil
+}
+
+func (pool *Pool) tryFeedNoBlock(box TaskBox, id int) bool {
+	var wk = pool.getWorker(id)
 	select {
-	case cn <- box:
+	case <- pool.closed:
+		return false
+	case <- box.closed:
+		return false
+	case wk.c <- box:
 		return true
 	default:
 		return false
 	}
 }
 
-func (pool *Pool) getWorker(hashId int) chan <- taskBox {
+func (pool *Pool) tryFeedBlock(ctx context.Context, box TaskBox, id int) bool {
+	var wk = pool.getWorker(id)
+	select {
+	case <- pool.closed:
+		return false
+	case <- box.closed:
+		return false
+	case wk.c <- box: // first check not in loop, why? more faster
+		return true
+	case <- ctx.Done():
+		return false
+	default:
+		//
+		for {
+			select {
+			case <- box.closed:
+				return false
+			case <- ctx.Done():
+				return false
+			case wk.c <- box:
+				return true
+			case <- pool.closed:
+				return false
+			}
+		}
+	}
+}
+
+func (pool *Pool) startWorkers() {
+	for i := 0 ; i < pool.max; i ++ {
+		wk := pool.p.Get()
+		pool.workers.Store(i, wk)
+		go func(wk *worker) {
+			for {
+				err := wk.run()
+				if err != nil {
+					log.Println("run worker err", err, ". rerun worker")
+				}
+			}
+		}(wk.(*worker))
+	}
+}
+
+func (pool *Pool) Close() error {
+	if atomic.CompareAndSwapInt32(&pool.status, 0, -1) {
+		close(pool.closed)
+		return nil
+	}
+	return nil
+}
+
+func (pool *Pool) getWorker(hashId int) *worker {
 	id := hashId % pool.max
-	wk := pool.p.Get()
-	a, loaded := pool.workers.LoadOrStore(id, wk)
+	wk, _ := pool.workers.Load(id)
+	//wk := pool.p.Get()
+	/*a, loaded := pool.workers.Load(id)
 	if loaded {
 		pool.p.Put(wk)
 	} else {
@@ -74,14 +139,15 @@ func (pool *Pool) getWorker(hashId int) chan <- taskBox {
 				}
 			}
 		}()
-	}
-	return a.(*worker).c
+	}*/
+	return wk.(*worker)
 }
 
 type worker struct {
+	idx int
 	mu sync.Mutex
 	closed chan struct{}
-	c  chan taskBox
+	c  chan TaskBox
 }
 
 func (w *worker) run() (err error) {
@@ -93,6 +159,10 @@ func (w *worker) run() (err error) {
 			return
 		}
 	}()
+
+	idx := w.idx
+
+
 	for {
 		select {
 		case <- w.closed:
@@ -102,22 +172,24 @@ func (w *worker) run() (err error) {
 				return nil
 			}
 			newCtx, cancel := context.WithCancel(context.Background())
-			go func(taskClose, workderClose <- chan struct{}) {
+			go func(ctx context.Context, taskClose, workerClose <- chan struct{}, cancel func()) {
 				select {
-				case <- workderClose:
+				case <-workerClose:
 					cancel()
 				case <- taskClose:
 					cancel()
+				case <- newCtx.Done():
 				}
-			}(box.closed, w.closed)
-			box.f(newCtx)
+			}(newCtx, box.closed, w.closed, cancel)
+			box.f(newCtx, idx)
 			cancel()
 		}
 	}
 }
 
-
-type taskBox struct {
+type TaskBox struct {
 	closed <- chan struct{}
 	f TaskFunc
+	stubborn bool
+	localId int
 }

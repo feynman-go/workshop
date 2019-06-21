@@ -3,6 +3,8 @@ package workshop
 import (
 	"context"
 	"errors"
+	"math/rand"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,7 +19,7 @@ func TestPromise(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		v, err := pms.Get(ctx)
+		v, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("get result with err:", err)
 		}
@@ -44,7 +46,7 @@ func TestPromise(t *testing.T) {
 			},
 		})
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		v, err := pms.Get(ctx)
+		v, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("get result with err:", err)
 		}
@@ -74,7 +76,7 @@ func TestPromise(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		_, err := pms.Get(ctx)
+		_, err := pms.Get(ctx, true)
 		if err != failed {
 			t.Fatal("expect get failed err but get:", err)
 		}
@@ -105,7 +107,7 @@ func TestPromiseChain(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		v, err := pms.Get(ctx)
+		v, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("get result with err:", err)
 		}
@@ -150,7 +152,7 @@ func TestPromiseChain(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		v, err := pms.Get(ctx)
+		v, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("get result with err:", err)
 		}
@@ -180,7 +182,7 @@ func TestPromiseCloseWait(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		_, err := pms.Get(ctx)
+		_, err := pms.Get(ctx, true)
 		if err != context.DeadlineExceeded {
 			t.Fatalf("wait timeout should return err of context.DeadlineExceeded but %v", err)
 		}
@@ -196,7 +198,7 @@ func TestPromiseCloseWait(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), 200 * time.Millisecond)
-		_, err := pms.Get(ctx)
+		_, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatalf("wait timeout should return err nil but %v", err)
 		}
@@ -222,7 +224,7 @@ func TestRecovery(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
-		v, err := pms.Get(ctx)
+		v, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("get result with err:", err)
 		}
@@ -251,7 +253,7 @@ func TestRecovery(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Second)
-		v, err := pms.Get(ctx)
+		v, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("get result with err:", err)
 		}
@@ -289,7 +291,7 @@ func TestRecovery(t *testing.T) {
 		})
 
 		ctx, _ := context.WithTimeout(context.Background(), time.Second)
-		_, err := pms.Get(ctx)
+		_, err := pms.Get(ctx, true)
 		if err == nil {
 			t.Fatal("expect return err")
 		}
@@ -300,6 +302,61 @@ func TestRecovery(t *testing.T) {
 
 		if !failed {
 			t.Errorf("expect recoverey failed")
+		}
+		return
+	})
+}
+
+func TestPromiseMultiTimeOut(t *testing.T) {
+	t.Run("test wait timeout", func(t *testing.T) {
+		gp := &sync.WaitGroup{}
+		pool := NewPool(3)
+		for i := 0 ; i < 20 ; i ++ {
+			gp.Add(1)
+
+			go func() {
+				pms := NewPromise(pool, Process{
+					Process: func(ctx context.Context, last interface{}) (interface{}, error) {
+						time.Sleep(100 * time.Millisecond)
+						return true, nil
+					},
+				})
+
+				ctx, _ := context.WithTimeout(context.Background(), 10 * time.Millisecond)
+
+				err := pms.Wait(ctx, true)
+				if err == nil {
+					t.Fatalf("wait timeout should return err")
+				}
+				gp.Done()
+			}()
+		}
+
+		time.Sleep(1 * time.Second)
+		gp.Wait()
+
+	})
+}
+
+func TestPartitionPromise(t *testing.T) {
+	t.Run("basic simple promise", func(t *testing.T) {
+		pool := NewPool(3)
+		pms := NewPromise(pool, Process{
+			EventKey: rand.Int(),
+			Partition: true,
+			Process: func(ctx context.Context, last interface{}) (interface{}, error) {
+				return true, nil
+			},
+		})
+
+		ctx, _ := context.WithTimeout(context.Background(), time.Millisecond)
+		v, err := pms.Get(ctx, true)
+		if err != nil {
+			t.Fatal("get result with err:", err)
+		}
+
+		if v != true {
+			t.Errorf("expect return true but return %v", v)
 		}
 		return
 	})

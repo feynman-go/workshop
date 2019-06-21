@@ -19,7 +19,7 @@ func ExamplePromise() {
 	defer pms.Close()
 
 	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
-	_, err := pms.Get(ctx)
+	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}
@@ -45,7 +45,7 @@ func ExamplePromiseChain() {
 	defer pms.Close()
 
 	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
-	_, err := pms.Get(ctx)
+	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}
@@ -71,7 +71,7 @@ func ExamplePromiseRetry() {
 	defer pms.Close()
 
 	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
-	_, err := pms.Get(ctx)
+	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}
