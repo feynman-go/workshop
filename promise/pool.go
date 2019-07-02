@@ -1,4 +1,4 @@
-package workshop
+package promise
 
 import (
 	"context"

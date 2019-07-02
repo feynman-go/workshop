@@ -1,4 +1,4 @@
-package workshop
+package promise
 
 import (
 	"context"
@@ -160,14 +160,14 @@ func (p *Promise) setNext(ps Process, success bool) *Promise {
 
 func (p *Promise) newTaskBox(taskFunc TaskFunc) TaskBox {
 
-	task := TaskBox {
+	task := TaskBox{
 		closed: p.closeChan,
 		f:      taskFunc,
 	}
 
 	if p.process.Partition {
-		task.stubborn = true
-		task.localId = int(p.eventKey)
+		stubborn = true
+		localId = int(p.eventKey)
 	}
 
 	return task
@@ -175,7 +175,7 @@ func (p *Promise) newTaskBox(taskFunc TaskFunc) TaskBox {
 
 func (p *Promise) post(ctx context.Context, last interface{}) error {
 	dp := p.doProcess
-	return p.pool.Feed(ctx, p.newTaskBox(func(ctx context.Context, localId int) {
+	return Feed(ctx, p.newTaskBox(func(ctx context.Context, localId int) {
 		dp(ctx, last)
 	}))
 }
