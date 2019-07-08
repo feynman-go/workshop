@@ -1,4 +1,4 @@
-package promise
+package workshop
 
 import (
 	"context"
@@ -16,10 +16,10 @@ func ExamplePromise() {
 	})
 
 	// close promise will close task context
-	defer Close()
+	defer pms.Close()
 
 	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
-	_, err := Get(ctx, true)
+	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}
@@ -27,7 +27,13 @@ func ExamplePromise() {
 
 func ExamplePromiseChain() {
 	pool := NewPool(3)
-	pms := Then(Process{
+	pms := NewPromise(pool, Process{
+		Process: func(ctx context.Context, last interface{}) (interface{}, error) {
+			// .... Do task 1
+			log.Println("do task one")
+			return true, nil
+		},
+	}).Then(Process{
 		Process: func(ctx context.Context, last interface{}) (interface{}, error) {
 			// .... Do task 2
 			log.Println("do task two")
@@ -36,10 +42,10 @@ func ExamplePromiseChain() {
 	})
 
 	// close promise will close task context
-	defer Close()
+	defer pms.Close()
 
 	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
-	_, err := Get(ctx, true)
+	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}
@@ -47,7 +53,13 @@ func ExamplePromiseChain() {
 
 func ExamplePromiseRetry() {
 	pool := NewPool(3)
-	pms := RecoverAndRetry(ExceptionProcess{
+	pms := NewPromise(pool, Process{
+		Process: func(ctx context.Context, last interface{}) (interface{}, error) {
+			// .... Do task 1
+			log.Println("do task one")
+			return true, nil
+		},
+	}).RecoverAndRetry(ExceptionProcess{
 		Process: func(ctx context.Context, err error, last interface{}) (interface{}, error) {
 			// .... try recover
 			log.Println("try recover")
@@ -56,10 +68,10 @@ func ExamplePromiseRetry() {
 	})
 
 	// close promise will close task context
-	defer Close()
+	defer pms.Close()
 
 	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
-	_, err := Get(ctx, true)
+	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}

@@ -1,4 +1,4 @@
-package promise
+package workshop
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func BenchmarkNewPromise(b *testing.B) {
 
 		for pb.Next() {
 			p := NewPromise(pool, pc)
-			_, err := Get(context.Background(), true)
+			_, err := p.Get(context.Background(), true)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -39,7 +39,7 @@ func BenchmarkNewPartitionPromise(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		var pc = Process{
 			Partition: true,
-			EventKey:  i,
+			EventKey: i,
 			Process: func(ctx context.Context, last interface{}) (interface{}, error) {
 				return nil, nil
 			},
@@ -47,7 +47,7 @@ func BenchmarkNewPartitionPromise(b *testing.B) {
 
 		for pb.Next() {
 			p := NewPromise(pool, pc)
-			_, err := Get(context.Background(), true)
+			_, err := p.Get(context.Background(), true)
 			if err != nil {
 				b.Fatal(err)
 			}

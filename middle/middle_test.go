@@ -2,7 +2,7 @@ package middle
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/promise"
+	"github.com/feynman-go/workshop"
 	"runtime"
 	"testing"
 	"time"
@@ -11,17 +11,17 @@ import (
 func TestPromiseWithRate(t *testing.T) {
 
 	t.Run("test promise err of rate limit", func(t *testing.T) {
-		pool := promise.NewPool(runtime.GOMAXPROCS(0))
+		pool := workshop.NewPool(runtime.GOMAXPROCS(0))
 		var md = NewRateMiddle(6, 6)
 		var err error
 		i := 0
 		for {
-			pms := promise.NewPromise(pool, promise.Process{
+			pms := workshop.NewPromise(pool, workshop.Process{
 				Process: func(ctx context.Context, last interface{}) (interface{}, error) {
 					return nil, nil
 				},
 				EventKey: 1,
-				Middles: []promise.Middle{md},
+				Middles: []workshop.Middle{md},
 			})
 			err = pms.Wait(context.Background())
 			if err != nil {
@@ -40,17 +40,17 @@ func TestPromiseWithRate(t *testing.T) {
 	})
 
 	t.Run("test promise of rate recover", func(t *testing.T) {
-		pool := promise.NewPool(runtime.GOMAXPROCS(0))
+		pool := workshop.NewPool(runtime.GOMAXPROCS(0))
 		var md = NewRateMiddle(6, 6)
 		var err error
 		i := 0
 		for {
-			pms := promise.NewPromise(pool, promise.Process{
+			pms := workshop.NewPromise(pool, workshop.Process{
 				Process: func(ctx context.Context, last interface{}) (interface{}, error) {
 					return nil, nil
 				},
 				EventKey: 1,
-				Middles: []promise.Middle{md},
+				Middles: []workshop.Middle{md},
 			})
 			err = pms.Wait(context.Background())
 			if err != nil {
@@ -69,12 +69,12 @@ func TestPromiseWithRate(t *testing.T) {
 
 		time.Sleep(time.Second)
 
-		pms := promise.NewPromise(pool, promise.Process{
+		pms := workshop.NewPromise(pool, workshop.Process{
 			Process: func(ctx context.Context, last interface{}) (interface{}, error) {
 				return nil, nil
 			},
 			EventKey: 1,
-			Middles: []promise.Middle{md},
+			Middles: []workshop.Middle{md},
 		})
 		err = pms.Wait(context.Background())
 		if err != nil {
