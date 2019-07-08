@@ -51,8 +51,8 @@ func (pool *Pool) Feed(ctx context.Context, box TaskBox) error {
 		}
 	} else {
 		id := atomic.AddUintptr(&pool.offset, 1)
-		if pool.tryFeedBlock(ctx, box, int(id)) {
-			return nil
+		if !pool.tryFeedBlock(ctx, box, int(id)) {
+			return errors.New("feed block")
 		}
 	}
 	return nil

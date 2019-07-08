@@ -1,3 +1,4 @@
+
 package workshop
 
 import (
@@ -5,6 +6,7 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -359,5 +361,37 @@ func TestPartitionPromise(t *testing.T) {
 			t.Errorf("expect return true but return %v", v)
 		}
 		return
+	})
+}
+
+
+func TestLargeRequest(t *testing.T) {
+	var count int32
+	var ppppp int32
+	t.Run("TestLargeRequest", func(t *testing.T) {
+		gp := &sync.WaitGroup{}
+		pool := NewPool(2)
+		for i := 0 ; i < 10 ; i ++ {
+			gp.Add(1)
+
+			go func() {
+				pms := NewPromise(pool, Process{
+					Process: func(ctx context.Context, last interface{}) (interface{}, error) {
+						time.Sleep(10 * time.Millisecond)
+						atomic.AddInt32(&count, 1)
+						return true, nil
+					},
+				})
+
+				ctx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
+				err := pms.Wait(ctx, true)
+				if err != nil {
+					t.Fatalf("wait timeout should return err")
+				}
+				atomic.AddInt32(&ppppp, 1)
+				gp.Done()
+			}()
+		}
+		gp.Wait()
 	})
 }
