@@ -5,7 +5,6 @@ import (
 	"errors"
 	"github.com/feynman-go/workshop/breaker"
 	"github.com/valyala/fastrand"
-	"golang.org/x/time/rate"
 	"sync"
 )
 
@@ -17,7 +16,7 @@ type memoryPool struct {
 	indies []*resourceInstance
 }
 
-func NewMemoryPool(count int, refresher Refresher, refreshLimit rate.Limit, config breaker.StatusConfig) ResourcePool {
+func NewMemoryPool(count int, refresher Refresher, config breaker.StatusConfig) ResourcePool {
 	ret := &memoryPool{
 		indies: []*resourceInstance{},
 		rmp: map[*resourceInstance]int{},
@@ -26,7 +25,6 @@ func NewMemoryPool(count int, refresher Refresher, refreshLimit rate.Limit, conf
 		instance := &resourceInstance{
 			status: breaker.NewStatus(config),
 			refresh: refresher,
-			refreshLimiter: rate.NewLimiter(refreshLimit, 1),
 		}
 		ret.indies = append(ret.indies, instance)
 		ret.rmp[instance] = len(ret.indies) - 1
@@ -60,9 +58,6 @@ func(mp *memoryPool) Get(ctx context.Context, partition bool, partitionKey int) 
 func(mp *memoryPool) putBackFunc(ri *resourceInstance) func(abnormal bool) {
 	return func(abnormal bool) {
 		ri.record(abnormal)
-		if abnormal && ri.status.StatusCode() != breaker.StatusCodeAbnormal {
-			ri.resetWithLock()
-		}
 	}
 }
 
@@ -72,11 +67,6 @@ type resourceInstance struct {
 	v interface{}
 	refresh Refresher
 	refreshErr error
-	refreshLimiter *rate.Limiter
-}
-
-func (res *resourceInstance) available() bool {
-	return res.status.StatusCode() != breaker.StatusCodeAbnormal
 }
 
 func (res *resourceInstance) get() interface{} {
@@ -93,6 +83,11 @@ func (res *resourceInstance) get() interface{} {
 
 func (res *resourceInstance) record(abnormal bool) {
 	res.status.Record(abnormal)
+	if res.status.StatusCode() == breaker.StatusCodeAbnormal {
+		res.v = nil
+	} else if abnormal {
+		res.resetWithLock()
+	}
 }
 
 func (res *resourceInstance) resetWithLock() {
@@ -105,8 +100,7 @@ func (res *resourceInstance) resetWithLock() {
 func (res *resourceInstance) reset() {
 	if res.refresh != nil {
 		var err error
-		if !res.refreshLimiter.Allow() {
-			res.status.ConvertToAbnormal()
+		if res.status.StatusCode() == breaker.StatusCodeAbnormal {
 			res.v = nil
 			return
 		}

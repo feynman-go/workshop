@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+const (
+	MiddleNameWaitRetry =  "wait-to-retry"
+)
+
 type DoOption struct {
 	retry func(err error) bool
 	timeOut time.Duration
@@ -17,6 +21,8 @@ type DoOption struct {
 }
 
 type ExecuteResult struct {
+	Try int
+	Recover int
 	Err error
 }
 
@@ -32,38 +38,25 @@ func New(promisePool *promise.Pool, resourcePool ResourcePool) *Client {
 }
 
 type Action struct {
-	Partition    bool
-	PartitionKey int
-	Do           func(ctx context.Context, resource *Resource) error
-	Recover      func(ctx context.Context, resource *Resource, err error) (wait time.Duration, ok bool)
-	HandleFail   func(ctx context.Context, err error)
-	MaxTimeOut   time.Duration // zero is useless
-	MinTimeOut   time.Duration // zero is useless
-	MaxRetryTimes int
+	Partition       bool
+	PartitionKey    int
+	Do              func(ctx context.Context, resource *Resource) error
+	Recover         func(ctx context.Context, resource *Resource, err error) (wait time.Duration, ok bool)
+	HandleFail      func(ctx context.Context, err error)
+	MaxTimeOut      time.Duration // zero is useless
+	MinTimeOut      time.Duration // zero is useless
+	MaxRecoverTimes int
 }
 
 func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
 	var er = &ExecuteResult{}
-	p := promise.NewPromise(manager.promisePool, manager.buildProcess(action, er))
-	ok := p.UpdateMiddles(func(middles *promise.Middles) *promise.Middles{
-		return middles.Append(promise.Middle {
-			Name: "wait-to-retry",
-			Wrapper: func(request promise.Request) (promise.Request, bool) {
-				payload, ok := request.LastPayload().(recoverPayload)
-				if !ok {
-					return request, true
-				}
-				request.Process.WaitTime = payload.waitTime
-				return request, true
-			},
-		})
-	})
-	if !ok {
-		er.Err = errors.New("setup middles failed")
-		return *er
-	}
 
-	p.RecoverAndRetry(manager.buildRecoverProcess(action, er), manager.buildFailedProcess(action, er))
+	process, opts := manager.buildProcess(action, er)
+	p := promise.NewPromise(manager.promisePool, process, opts...)
+
+	process, opts = manager.buildRecoverProcess(action, er)
+
+	p.Recover(process, opts...).HandleException(manager.buildFailedProcess(action, er))
 	_, err := p.Get(ctx, true)
 	if err != nil {
 		er.Err = err
@@ -71,32 +64,45 @@ func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
 	return *er
 }
 
-func (manager *Client) buildProcess(action Action, er *ExecuteResult) promise.Process {
-	return promise.Process{
-		Partition: action.Partition,
-		EventKey: action.PartitionKey,
-		Process: func(ctx context.Context, request promise.Request) promise.Result {
-			timeout := manager.getRandomTimeout(action)
-			if timeout != 0 {
-				ctx, _ = context.WithTimeout(ctx, timeout)
-			}
-			res, err := manager.resourcePool.Get(ctx, action.Partition, action.PartitionKey)
-			if err != nil {
-				return promise.Result{
-					Err: ErrGetResource,
-				}
-			}
-			if action.Do != nil {
-				err = action.Do(ctx, res)
-			}
-			if err == nil {
-				res.PutBack(false)
-			}
+func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Option) {
+	return func(ctx context.Context, request promise.Request) promise.Result {
+		timeout := manager.getRandomTimeout(action)
+		if timeout != 0 {
+			ctx, _ = context.WithTimeout(ctx, timeout)
+		}
+		res, err := manager.resourcePool.Get(ctx, action.Partition, action.PartitionKey)
+		if err != nil {
 			return promise.Result{
-				Err: err,
-				Payload: res,
+				Err: ErrGetResource,
 			}
-		},
+		}
+		if action.Do != nil {
+			er.Try ++
+			err = action.Do(ctx, res)
+		}
+		if err == nil {
+			res.PutBack(false)
+		}
+		return promise.Result{
+			Err: err,
+			Payload: res,
+		}
+	}, []promise.Option{
+		promise.WithEventKey(action.PartitionKey),
+		promise.WithPartition(action.Partition),
+		promise.WithAppendMiddles(promise.Middle {
+			Name: MiddleNameWaitRetry,
+			Wrapper: func(request promise.Request) (promise.Request, bool) {
+				payload, ok := request.LastPayload().(recoverPayload)
+				if !ok {
+					return request, true
+				}
+				if payload.waitTime != 0 {
+					request.WithOption(promise.WithWaitTime(payload.waitTime))
+				}
+				return request, true
+			},
+		}),
 	}
 }
 
@@ -104,67 +110,60 @@ type recoverPayload struct {
 	waitTime time.Duration
 }
 
-func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) promise.Process {
-	retryTimes := action.MaxRetryTimes
-	return promise.Process{
-		Partition: action.Partition,
-		EventKey: action.PartitionKey,
-		Process: func(ctx context.Context, request promise.Request) promise.Result {
-			res, ok := request.LastPayload().(*Resource)
-			if ok {
-				defer func() {
-					if res.Available() {
-						res.PutBack(true)
-					}
-				}()
-			}
-			timeout := manager.getRandomTimeout(action)
-			if timeout != 0 {
-				ctx, _ = context.WithTimeout(ctx, timeout)
-			}
+func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Option) {
+	return func(ctx context.Context, request promise.Request) promise.Result {
+		res, ok := request.LastPayload().(*Resource)
+		if ok {
+			defer func() {
+				if res.Live() {
+					res.PutBack(true)
+				}
+			}()
+		}
+		timeout := manager.getRandomTimeout(action)
+		if timeout != 0 {
+			ctx, _ = context.WithTimeout(ctx, timeout)
+		}
 
-			if retryTimes > action.MaxRetryTimes {
-				return promise.Result {
-					Err: request.LastErr(),
-				}
-			}
-
-			if action.Recover == nil { // do retry
-				return promise.Result {
-					Err: request.LastErr(),
-				}
-			}
-			wait, ok := action.Recover(ctx, res, request.LastErr())
-			if !ok {
-				return promise.Result{
-					Err: request.LastErr(),
-				}
-			}
-			retryTimes ++
+		if er.Recover >= action.MaxRecoverTimes {
 			return promise.Result {
-				Payload: recoverPayload{
-					waitTime: wait,
-				},
+				Err: request.LastErr(),
 			}
-		},
-	}
-}
+		}
 
-func (manager *Client) buildFailedProcess(action Action, er *ExecuteResult) promise.Process {
-	return promise.Process{
-		Partition: action.Partition,
-		EventKey: action.PartitionKey,
-		Process: func(ctx context.Context, request promise.Request) promise.Result {
-			if action.HandleFail == nil {
-				return promise.Result {
-					Err: request.LastErr(),
-				}
+		if action.Recover == nil { // do retry
+			return promise.Result {
+				Err: request.LastErr(),
 			}
-			action.HandleFail(ctx, request.LastErr())
+		}
+		er.Recover ++
+		wait, ok := action.Recover(ctx, res, request.LastErr())
+		if !ok {
 			return promise.Result{
 				Err: request.LastErr(),
 			}
-		},
+		}
+		return promise.Result {
+			Payload: recoverPayload{
+				waitTime: wait,
+			},
+		}
+	}, []promise.Option{
+		promise.WithRemoveMiddles(false, MiddleNameWaitRetry),
+	}
+}
+
+func (manager *Client) buildFailedProcess(action Action, er *ExecuteResult) promise.ProcessFunc {
+	return func(ctx context.Context, request promise.Request) promise.Result {
+		if action.HandleFail == nil {
+			return promise.Result {
+				Err: request.LastErr(),
+			}
+		}
+		action.HandleFail(ctx, request.LastErr())
+		return promise.Result{
+			Err: request.LastErr(),
+		}
 	}
 }
 func (manager *Client) getRandomTimeout(action Action) time.Duration {
@@ -189,7 +188,7 @@ func NewResource(recycle func(abnormal bool), v interface{}) *Resource {
 	}
 }
 
-func (res *Resource) Available() bool {
+func (res *Resource) Live() bool {
 	res.rw.RLock()
 	defer res.rw.RUnlock()
 	if res.pusBack {
@@ -244,9 +243,9 @@ func DefaultAction(do func(ctx context.Context, resource *Resource) error) Actio
 			}
 			return time.Second, true
 		},
-		MaxTimeOut: DefaultMaxTimeOut,
-		MinTimeOut: DefaultMinTimeOut,
-		MaxRetryTimes: 3,
+		MaxTimeOut:      DefaultMaxTimeOut,
+		MinTimeOut:      DefaultMinTimeOut,
+		MaxRecoverTimes: 3,
 	}
 	return action
 }

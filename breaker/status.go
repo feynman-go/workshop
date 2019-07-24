@@ -37,7 +37,7 @@ Status 会停留在 StateTypeAbnormal状态一段时间后（时间可以为0）
 type StatusConfig struct {
 	AbnormalLimit    rate.Limit
 	AbnormalDuration time.Duration
-	ResetLimit       rate.Limit
+	RestoreLimit     rate.Limit
 	RestoreCount     int32
 }
 
@@ -55,13 +55,20 @@ type Status struct {
 func NewStatus(config StatusConfig) *Status {
 	return &Status{
 		abLimiter:        rate.NewLimiter(config.AbnormalLimit, 1),
-		resetLimiter:     rate.NewLimiter(config.ResetLimit, 1),
+		resetLimiter:     rate.NewLimiter(config.RestoreLimit, 1),
 		abnormalDuration: config.AbnormalDuration,
 		restoreCount:     0,
 		maxRestoreCount:  config.RestoreCount,
 		key:              StatusCodeNormal,
 	}
 }
+
+func (st *Status) ConvertToAbnormal() {
+	st.rw.Lock()
+	defer st.rw.Unlock()
+	st.convertToAbnormal()
+}
+
 
 func (st *Status) StatusCode() StatusCode {
 	st.rw.RLock()
@@ -71,16 +78,11 @@ func (st *Status) StatusCode() StatusCode {
 
 func (st *Status) getStateKey() StatusCode {
 	if st.key == StatusCodeAbnormal {
-		time.Now().After(st.abnormalEnd)
-		st.convertToRestore()
+		if time.Now().After(st.abnormalEnd) {
+			st.convertToRestore()
+		}
 	}
 	return st.key
-}
-
-func (st *Status) ConvertToAbnormal() {
-	st.rw.Lock()
-	defer st.rw.Unlock()
-	st.convertToAbnormal()
 }
 
 func (st *Status) Record(abnormal bool) {
@@ -95,7 +97,7 @@ func (st *Status) Record(abnormal bool) {
 			}
 		}
 	case StatusCodeAbnormal:
-		return
+		st.getStateKey()
 	case StatusCodeRestore:
 		if !abnormal {
 			st.restoreCount++

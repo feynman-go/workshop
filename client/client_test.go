@@ -21,11 +21,11 @@ func TestClientBasic(t *testing.T) {
 		return mockClient{
 			RequestCount: &reqCount,
 		}, nil
-	}), rate.Every(time.Second), breaker.StatusConfig{
-		AbnormalLimit: rate.Every(time.Second),
-		ResetLimit: rate.Every(time.Second),
+	}), breaker.StatusConfig{
+		AbnormalLimit:    rate.Every(time.Second),
+		RestoreLimit:     rate.Every(time.Second),
 		AbnormalDuration: time.Second,
-		RestoreCount: 10,
+		RestoreCount:     10,
 	})
 
 	client := New(promise.NewPool(1), resPool)
@@ -74,14 +74,17 @@ func TestClientRecover(t *testing.T) {
 	var reqCount = 0
 	resPool := NewMemoryPool(1, Refresher(func(last interface{}) (new interface{}, err error) {
 		log.Println("try refresh data")
+		if reqCount > 10 {
+			reqCount = 0
+		}
 		return mockClient {
 			RequestCount: &reqCount,
 		}, nil
-	}), rate.Every(3 * time.Second), breaker.StatusConfig{
-		AbnormalLimit: rate.Every(3 * time.Second),
-		ResetLimit: rate.Every(time.Second),
-		AbnormalDuration: time.Second,
-		RestoreCount: 2,
+	}), breaker.StatusConfig{
+		AbnormalLimit:    rate.Every(3 * time.Second),
+		RestoreLimit:     rate.Every(3 * time.Second),
+		AbnormalDuration: 5 * time.Second,
+		RestoreCount:     2,
 	})
 
 	client := New(promise.NewPool(1), resPool)
@@ -102,9 +105,9 @@ func TestClientRecover(t *testing.T) {
 		},
 		Recover: func(ctx context.Context, resource *Resource, err error) (time.Duration, bool) {
 			mc := resource.Get().(mockClient)
-			log.Println("recover resource count:", *mc.RequestCount)
+			log.Println("try resource count:", *mc.RequestCount)
 			resource.PutBack(true)
-			return time.Second, true
+			return 0, true
 		},
 		MaxTimeOut: time.Second,
 		MinTimeOut: 1 * time.Second,
