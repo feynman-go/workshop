@@ -40,7 +40,7 @@ func BenchmarkNewPartitionPromise(b *testing.B) {
 		}
 
 		for pb.Next() {
-			p := NewPromise(pool, pc, WithEventKey(i), WithPartition(true))
+			p := NewPromise(pool, pc, EventKeyMiddle(i), PartitionMiddle(true))
 			_, err := p.Get(context.Background(), true)
 			if err != nil {
 				b.Fatal(err)

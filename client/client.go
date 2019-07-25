@@ -45,7 +45,6 @@ type Action struct {
 	HandleFail      func(ctx context.Context, err error)
 	MaxTimeOut      time.Duration // zero is useless
 	MinTimeOut      time.Duration // zero is useless
-	MaxRecoverTimes int
 }
 
 func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
@@ -54,9 +53,7 @@ func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
 	process, opts := manager.buildProcess(action, er)
 	p := promise.NewPromise(manager.promisePool, process, opts...)
 
-	process, opts = manager.buildRecoverProcess(action, er)
-
-	p.Recover(process, opts...).HandleException(manager.buildFailedProcess(action, er))
+	p.Recover(manager.buildRecoverProcess(action, er)).HandleException(manager.buildFailedProcess(action, er))
 	_, err := p.Get(ctx, true)
 	if err != nil {
 		er.Err = err
@@ -64,7 +61,7 @@ func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
 	return *er
 }
 
-func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Option) {
+func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Middle) {
 	return func(ctx context.Context, request promise.Request) promise.Result {
 		timeout := manager.getRandomTimeout(action)
 		if timeout != 0 {
@@ -72,7 +69,7 @@ func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.P
 		}
 		res, err := manager.resourcePool.Get(ctx, action.Partition, action.PartitionKey)
 		if err != nil {
-			return promise.Result{
+			return promise.Result {
 				Err: ErrGetResource,
 			}
 		}
@@ -87,21 +84,18 @@ func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.P
 			Err: err,
 			Payload: res,
 		}
-	}, []promise.Option{
-		promise.WithEventKey(action.PartitionKey),
-		promise.WithPartition(action.Partition),
-		promise.WithAppendMiddles(promise.Middle {
-			Name: MiddleNameWaitRetry,
-			Wrapper: func(request promise.Request) (promise.Request, bool) {
-				payload, ok := request.LastPayload().(recoverPayload)
-				if !ok {
-					return request, true
-				}
-				if payload.waitTime != 0 {
-					request.WithOption(promise.WithWaitTime(payload.waitTime))
-				}
-				return request, true
-			},
+	}, []promise.Middle{
+		promise.EventKeyMiddle(action.PartitionKey).WithInheritable(true),
+		promise.PartitionMiddle(action.Partition).WithInheritable(true),
+		promise.WaitMiddle(func(ctx context.Context, request promise.Request) error {
+			payload, ok := request.LastPayload().(recoverPayload)
+			if !ok {
+				return nil
+			}
+			if payload.waitTime != 0 {
+				return promise.WaitTime(ctx, payload.waitTime)
+			}
+			return nil
 		}),
 	}
 }
@@ -110,7 +104,7 @@ type recoverPayload struct {
 	waitTime time.Duration
 }
 
-func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Option) {
+func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) promise.ProcessFunc {
 	return func(ctx context.Context, request promise.Request) promise.Result {
 		res, ok := request.LastPayload().(*Resource)
 		if ok {
@@ -123,12 +117,6 @@ func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) (pr
 		timeout := manager.getRandomTimeout(action)
 		if timeout != 0 {
 			ctx, _ = context.WithTimeout(ctx, timeout)
-		}
-
-		if er.Recover >= action.MaxRecoverTimes {
-			return promise.Result {
-				Err: request.LastErr(),
-			}
 		}
 
 		if action.Recover == nil { // do retry
@@ -148,8 +136,6 @@ func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) (pr
 				waitTime: wait,
 			},
 		}
-	}, []promise.Option{
-		promise.WithRemoveMiddles(false, MiddleNameWaitRetry),
 	}
 }
 
@@ -233,6 +219,7 @@ const (
 )
 
 func DefaultAction(do func(ctx context.Context, resource *Resource) error) Action {
+	var maxCount int
 	action := Action {
 		Partition: false,
 		PartitionKey: 1,
@@ -241,11 +228,14 @@ func DefaultAction(do func(ctx context.Context, resource *Resource) error) Actio
 			if resource != nil {
 				resource.PutBack(true)
 			}
+			maxCount ++
+			if maxCount >= 3 {
+				return 0, false
+			}
 			return time.Second, true
 		},
 		MaxTimeOut:      DefaultMaxTimeOut,
 		MinTimeOut:      DefaultMinTimeOut,
-		MaxRecoverTimes: 3,
 	}
 	return action
 }

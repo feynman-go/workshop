@@ -2,7 +2,7 @@ package promise
 
 import "context"
 
-func Parallel(ctx context.Context, process func(ctx context.Context) error, opt ...Option) error {
+func Parallel(ctx context.Context, process func(ctx context.Context) error, middles ...Middle) error {
 	pool := NewPool(1)
 	defer pool.Close()
 
@@ -11,7 +11,7 @@ func Parallel(ctx context.Context, process func(ctx context.Context) error, opt 
 		return Result{
 			Err: err,
 		}
-	}, opt...)
+	}, middles...)
 
 	return promise.Wait(ctx, true)
 }

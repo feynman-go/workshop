@@ -104,6 +104,10 @@ func TestClientRecover(t *testing.T) {
 			return nil
 		},
 		Recover: func(ctx context.Context, resource *Resource, err error) (time.Duration, bool) {
+			if resource == nil {
+				log.Println("resource not exists!")
+				return 0, false
+			}
 			mc := resource.Get().(mockClient)
 			log.Println("try resource count:", *mc.RequestCount)
 			resource.PutBack(true)

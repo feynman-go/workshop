@@ -1,20 +1,17 @@
 package promise
 
 import (
-	"container/list"
 	"context"
 	"sync"
-	"time"
 )
 
 type Request struct {
-	from    *processInstance
-	Process ProcessFunc
-	profiles *profiles
-}
-
-func (req *Request) WithOption(opt ...Option) {
-	req.profiles = req.profiles.withOpts(opt)
+	from     *processInstance
+	Wait      func(ctx context.Context, req Request) error
+	Partition bool
+	EventKey  int
+	Process   ProcessFunc
+	MiddleEnd bool
 }
 
 func (r Request) LastErr() error {
@@ -43,185 +40,45 @@ type Result struct {
 
 type ProcessFunc func(ctx context.Context, req Request) Result
 
-type Middles struct {
-	list *list.List
-	rw   sync.RWMutex
-}
-
-const (
-	PlaceHoldMiddleName = "__place_hold"
-)
-
-type MiddleWrapper struct {
-	l       *list.List
-	element *list.Element
-}
-
-type Middle struct {
-	Name        string
-	Wrapper     func(process Request) (Request, bool)
-	placeholder bool
-}
-
-func (wrapper MiddleWrapper) Name() string {
-	return wrapper.element.Value.(Middle).Name
-}
-
-func (wrapper MiddleWrapper) InsertBefore(middle Middle) {
-	wrapper.l.InsertBefore(middle, wrapper.element)
-}
-
-func (wrapper MiddleWrapper) InsertAfter(middle Middle) {
-	wrapper.l.InsertAfter(middle, wrapper.element)
-}
-
-func (wrapper MiddleWrapper) Remove() {
-	wrapper.l.Remove(wrapper.element)
-}
-
-func (wrapper MiddleWrapper) IsHead() bool {
-	return wrapper.element.Prev() == nil
-}
-
-func (wrapper MiddleWrapper) IsTail() bool {
-	return wrapper.element.Next() == nil
-}
-
-func (wrapper MiddleWrapper) IsPlaceholder() bool {
-	return wrapper.element.Value.(Middle).placeholder
-}
-
-func (wrapper *MiddleWrapper) Update(opt Middle) {
-	wrapper.element.Value = opt
-}
-
-func (middles *Middles) getList() *list.List {
-	middles.rw.Lock()
-	defer middles.rw.Unlock()
-	if middles.list == nil {
-		middles.list = list.New()
-	}
-	return middles.list
-}
-
-// walk middlesFactory and return new middlesFactory
-func (middles *Middles) Walk(walker func(m MiddleWrapper) bool) *Middles {
-	var (
-		ctn = true
-		ls = list.New()
-		wrapper = MiddleWrapper {
-			l: ls,
-		}
-	)
-	// copy TODO may to be improved
-	cur := middles.getList().Front()
-	for cur != nil {
-		ls.PushBack(cur.Value)
-		cur = cur.Next()
-	}
-
-	var placeHold *list.Element
-	if ls.Front() == nil {
-		placeHold = ls.PushBack(Middle{
-			Name:        PlaceHoldMiddleName,
-			placeholder: true,
-		})
-	}
-
-	cur = ls.Back()
-	for cur != nil {
-		prev := cur.Prev()
-		wrapper.element = cur
-		if ctn {
-			ctn = walker(wrapper)
-		}
-		cur = prev
-	}
-	if placeHold != nil {
-		ls.Remove(placeHold)
-	}
-
-	return &Middles{
-		list: ls,
-	}
-}
-
-func (middles *Middles) Append(middle ...Middle) *Middles {
-	return middles.Walk(func(m MiddleWrapper) bool {
-		if m.IsTail() {
-			for _, md := range middle {
-				m.InsertAfter(md)
-			}
-			return false
-		}
-		return true
-	})
-}
-
-func (middles *Middles) warp(in Request) (out Request) {
-	var (
-		ok = true
-		ls = middles.getList()
-		cur = ls.Front()
-	)
-
-
-	out = in
-	for cur != nil && ok {
-		md := cur.Value.(Middle)
-		if md.Wrapper != nil {
-			out, ok = md.Wrapper(out)
-		}
-		cur = cur.Next()
-	}
-	return out
-}
-
 type Promise struct {
-	eventKey  int64
-	//from      *Promise
-	process   ProcessFunc
 	success   *Promise
 	exception *Promise
 	pool      *Pool
-	profiles  *profiles
+	process   ProcessFunc
+	middles   *MiddleLink
 	*chanStatus
 }
 
-func NewPromise(pool *Pool, process ProcessFunc, opt ...Option) *Promise {
-	p := new(profiles)
-	if len(opt) > 0 {
-		p = p.withOpts(opt)
-	}
-	return newPromise(process, p, pool)
+func NewPromise(pool *Pool, process ProcessFunc, middles ...Middle) *Promise {
+	return newPromise(process, new(MiddleLink).Append(middles...), pool)
 }
 
 // only on success, return a new Process, basic interface
-func (p *Promise) Then(ps ProcessFunc, option ...Option) *Promise {
-	return p.setNext(ps, option, true)
+func (p *Promise) Then(ps ProcessFunc, middles ...Middle) *Promise {
+	return p.setNext(ps, middles, true)
 }
 
 // return new exception future, basic interface
-func (p *Promise) OnException(ps ProcessFunc, option ...Option) *Promise {
-	return p.setNext(ps, option, false)
+func (p *Promise) OnException(ps ProcessFunc, middles ...Middle) *Promise {
+	return p.setNext(ps, middles, false)
 }
 
 type ExceptionPromise struct {
 	p *Promise
 }
 
-func (p ExceptionPromise) HandleException(ps ProcessFunc, option ...Option) *Promise {
-	return p.p.OnException(ps, option...)
+func (p ExceptionPromise) HandleException(ps ProcessFunc, middles ...Middle) *Promise {
+	return p.p.OnException(ps, middles...)
 }
 
-func (p *Promise) TryRecover(recover ProcessFunc, onRecoverFailed ProcessFunc, option ...Option) *Promise {
-	p.Recover(recover, option...).HandleException(onRecoverFailed)
+func (p *Promise) TryRecover(recover ProcessFunc, onRecoverFailed ProcessFunc, middles ...Middle) *Promise {
+	p.Recover(recover, middles...).HandleException(onRecoverFailed)
 	return p
 }
 
-func (p *Promise) Recover(recover ProcessFunc, option ...Option) ExceptionPromise {
+func (p *Promise) Recover(recover ProcessFunc, middles ...Middle) ExceptionPromise {
 	recoverPromise := p.setNextPromise(func() *Promise{
-		return fromPromise(p, recover, option)
+		return fromPromise(p, recover, middles)
 	}, false)
 
 	recoverPromise.setNextPromise(func() *Promise{
@@ -260,7 +117,7 @@ func (p *Promise) IsClosed() bool {
 	return p.chanStatus.isClosed()
 }
 
-// wait all sub route finish or closed
+// Wait all sub route finish or closed
 func (p *Promise) Wait(ctx context.Context, close bool) error {
 	if close {
 		defer p.Close()
@@ -302,21 +159,21 @@ func (p *Promise) setNextPromise(buildNext func() *Promise, success bool) *Promi
 	return ret
 }
 
-func (p *Promise) setNext(ps ProcessFunc, opts []Option, success bool) *Promise {
+func (p *Promise) setNext(ps ProcessFunc, middles []Middle, success bool) *Promise {
 	return p.setNextPromise(func() *Promise{
-		return fromPromise(p, ps, opts)
+		return fromPromise(p, ps, middles)
 	}, success)
 }
 
-func (p *Promise) newTaskBox(taskFunc TaskFunc) TaskBox {
+func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 	task := TaskBox {
 		closed: p.closeChan,
 		f:      taskFunc,
 	}
 
-	if p.profiles.partition {
+	if req.Partition {
 		task.stubborn = true
-		task.localId = int(p.eventKey)
+		task.localId = int(req.EventKey)
 	}
 
 	return task
@@ -324,35 +181,36 @@ func (p *Promise) newTaskBox(taskFunc TaskFunc) TaskBox {
 
 func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error {
 	req := Request{
-		from:    lastProcess,
+		from:     lastProcess,
 		Process: p.process,
-		profiles: p.profiles,
 	}
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		var err error
-		if ms := p.profiles.middles; ms != nil {
-			req = ms.warp(req)
+		if ms := p.middles; ms != nil {
+			ms.Range(func(middle Middle) bool {
+				if middle.Wrapper != nil {
+					req = middle.Wrapper(req)
+				}
+				return !req.MiddleEnd
+			})
 		}
-		if req.profiles.waitTime != 0 { //wait time
-			t := timerPool.Get().(*time.Timer)
-			if !t.Stop() {
-				<-t.C
-			}
-			t.Reset(req.profiles.waitTime)
-			select {
-			case <- t.C:
-			case <- p.getCloseChan():
-				cancel()
-			case <- ctx.Done():
-				err = ctx.Err()
-			}
+		if req.Wait != nil { //Wait func
+			go func() {
+				select {
+				case <- p.getCloseChan():
+					cancel()
+				case <- ctx.Done():
+				}
+			}()
+			err = req.Wait(ctx, req)
 		}
 		if err == nil {
-			err = p.pool.Feed(ctx, p.newTaskBox(func(ctx context.Context, localId int) {
+			err = p.pool.Feed(ctx, p.newTaskBox(req, func(ctx context.Context, localId int) {
 				p.doProcess(ctx, req)
 			}))
 		}
+		cancel()
 		if err != nil {
 			p.close(err, lastProcess)
 		}
@@ -395,20 +253,24 @@ func (p *Promise) doProcess(ctx context.Context, req Request) {
 }
 
 
-func fromPromise(from *Promise, process ProcessFunc, opts []Option) *Promise {
+func fromPromise(from *Promise, process ProcessFunc, middles []Middle) *Promise {
 	p := new(Promise)
 	p.pool = from.pool
 	p.process = process
 	p.chanStatus = from.chanStatus
-	p.profiles = from.profiles.withOpts(opts)
+	var ms = from.middles
+	if ms == nil {
+		ms = new(MiddleLink)
+	}
+	p.middles = ms.IncFragmentID().Append(middles...)
 	return p
 }
 
-func newPromise(process ProcessFunc, ps *profiles, pool *Pool) *Promise {
+func newPromise(process ProcessFunc, link *MiddleLink, pool *Pool) *Promise {
 	p := new(Promise)
 	p.pool = pool
+	p.middles = link
 	p.process = process
-	p.profiles = ps
 	var st = new(chanStatus)
 	st.err = new(error)
 	st.closeChan = make(chan struct{}, 0)
@@ -517,115 +379,4 @@ func (s *chanStatus) close(err error, instance *processInstance) {
 
 func (s *chanStatus) getCloseChan() <- chan struct{} {
 	return s.closeChan
-}
-
-var timerPool = &sync.Pool{
-	New: func() interface{} {
-		return time.NewTimer(0)
-	},
-}
-
-type Option struct {
-	partition *bool
-	eventKey  *int
-	waitTime *time.Duration
-	middles *func(middles *Middles) *Middles
-}
-
-type profiles struct {
-	middles *Middles
-	waitTime time.Duration
-	partition bool
-	eventKey int
-}
-
-func (from *profiles) withOpts(option []Option) *profiles{
-	to := new(profiles)
-	*to = *from
-
-	for _, opt := range option {
-		if opt.waitTime != nil {
-			to.waitTime = *opt.waitTime
-		}
-		if opt.partition != nil {
-			to.partition = *opt.partition
-		}
-		if opt.eventKey != nil {
-			to.eventKey = *opt.eventKey
-		}
-		if opt.middles != nil {
-			if to.middles == nil {
-				to.middles = &Middles{}
-			}
-			to.middles = (*opt.middles)(to.middles)
-		}
-	}
-	return to
-}
-
-func WithPartition(partition bool) Option {
-	return Option{
-		partition: &partition,
-	}
-}
-
-func WithEventKey(eventKey int) Option {
-	return Option{
-		eventKey: &eventKey,
-	}
-}
-
-func WithWaitTime(duration time.Duration) Option {
-	return Option{
-		waitTime: &duration,
-	}
-}
-
-func WithAppendMiddles(middle ...Middle) Option {
-	f := func(ms *Middles) *Middles {
-		return ms.Append(middle...)
-	}
-	return Option {
-		middles: &f,
-	}
-}
-
-func WithRemoveMiddles(all bool, names ...string) Option {
-	f := func(ms *Middles) *Middles {
-		return ms.Walk(func(wrapper MiddleWrapper) bool {
-			for _, n := range names {
-				if n != wrapper.Name() {
-					continue
-				}
-				wrapper.Remove()
-				if !all {
-					return false
-				}
-			}
-			return true
-		})
-	}
-	return Option {
-		middles: &f,
-	}
-}
-
-
-func WrapProcess(name string, wrapper func(context.Context, Request, ProcessFunc) Result) Middle {
-	return Middle{
-		Name: name,
-		Wrapper: func(request Request) (Request, bool) {
-			p := request.Process
-			request.Process = func(ctx context.Context, req Request) Result{
-				return wrapper(ctx, req, p)
-			}
-		},
-	}
-}
-
-func WrapTimeout(name string, timeout time.Duration) Middle {
-	return WrapProcess(name, func(ctx context.Context, req Request, p ProcessFunc) Result {
-		ctx, _ = context.WithTimeout(ctx, timeout)
-		return p(ctx, req)
-	})
 }

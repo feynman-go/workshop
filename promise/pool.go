@@ -47,7 +47,8 @@ func (pool *Pool) MaxLocalID() int {
 func (pool *Pool) Feed(ctx context.Context, box TaskBox) error {
 	if box.stubborn {
 		if !pool.tryFeedBlock(ctx, box, box.localId) {
-			return errors.New("stubborn feed block")
+			return errors.New("stubborn " +
+				"feed block")
 		}
 	} else {
 		id := atomic.AddUintptr(&pool.offset, 1)
