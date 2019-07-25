@@ -6,7 +6,7 @@ import (
 )
 
 type Request struct {
-	from     *processInstance
+	from      *processInstance
 	Wait      func(ctx context.Context, req Request) error
 	Partition bool
 	EventKey  int
@@ -34,7 +34,7 @@ type processInstance struct {
 }
 
 type Result struct {
-	Err error
+	Err     error
 	Payload interface{}
 }
 
@@ -77,11 +77,11 @@ func (p *Promise) TryRecover(recover ProcessFunc, onRecoverFailed ProcessFunc, m
 }
 
 func (p *Promise) Recover(recover ProcessFunc, middles ...Middle) ExceptionPromise {
-	recoverPromise := p.setNextPromise(func() *Promise{
+	recoverPromise := p.setNextPromise(func() *Promise {
 		return fromPromise(p, recover, middles)
 	}, false)
 
-	recoverPromise.setNextPromise(func() *Promise{
+	recoverPromise.setNextPromise(func() *Promise {
 		return p
 	}, true)
 
@@ -94,9 +94,9 @@ func (p *Promise) Get(ctx context.Context, close bool) (interface{}, error) {
 		defer p.Close()
 	}
 	select {
-	case <- ctx.Done():
+	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <- p.closeChan:
+	case <-p.closeChan:
 		var err error
 		var v *Result
 		//Need sync. Because of golang memory modal.
@@ -160,13 +160,13 @@ func (p *Promise) setNextPromise(buildNext func() *Promise, success bool) *Promi
 }
 
 func (p *Promise) setNext(ps ProcessFunc, middles []Middle, success bool) *Promise {
-	return p.setNextPromise(func() *Promise{
+	return p.setNextPromise(func() *Promise {
 		return fromPromise(p, ps, middles)
 	}, success)
 }
 
 func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
-	task := TaskBox {
+	task := TaskBox{
 		closed: p.closeChan,
 		f:      taskFunc,
 	}
@@ -181,7 +181,7 @@ func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 
 func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error {
 	req := Request{
-		from:     lastProcess,
+		from:    lastProcess,
 		Process: p.process,
 	}
 	go func() {
@@ -198,9 +198,9 @@ func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error 
 		if req.Wait != nil { //Wait func
 			go func() {
 				select {
-				case <- p.getCloseChan():
+				case <-p.getCloseChan():
 					cancel()
-				case <- ctx.Done():
+				case <-ctx.Done():
 				}
 			}()
 			err = req.Wait(ctx, req)
@@ -252,7 +252,6 @@ func (p *Promise) doProcess(ctx context.Context, req Request) {
 	}
 }
 
-
 func fromPromise(from *Promise, process ProcessFunc, middles []Middle) *Promise {
 	p := new(Promise)
 	p.pool = from.pool
@@ -281,12 +280,12 @@ func newPromise(process ProcessFunc, link *MiddleLink, pool *Pool) *Promise {
 }
 
 type chanStatus struct {
-	started bool
-	closeChan chan struct{}
+	started      bool
+	closeChan    chan struct{}
 	lastInstance *processInstance
-	err       *error
-	root 	  *Promise
-	mu sync.RWMutex
+	err          *error
+	root         *Promise
+	mu           sync.RWMutex
 }
 
 func (s *chanStatus) tryUnStart(f func()) bool {
@@ -346,7 +345,7 @@ func (s *chanStatus) getResult() (*Result, error) {
 
 func (s *chanStatus) isClosed() bool {
 	select {
-	case <- s.closeChan:
+	case <-s.closeChan:
 		return true
 	default:
 		return false
@@ -355,12 +354,12 @@ func (s *chanStatus) isClosed() bool {
 
 func (s *chanStatus) waitClose(ctx context.Context) error {
 	select {
-	case <- s.closeChan:
+	case <-s.closeChan:
 		if s.err != nil {
 			return *s.err
 		}
 		return nil
-	case <- ctx.Done():
+	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
@@ -368,7 +367,7 @@ func (s *chanStatus) waitClose(ctx context.Context) error {
 func (s *chanStatus) close(err error, instance *processInstance) {
 	s.mu.Lock()
 	select {
-	case <- s.closeChan:
+	case <-s.closeChan:
 	default:
 		close(s.closeChan)
 		*s.err = err
@@ -377,6 +376,6 @@ func (s *chanStatus) close(err error, instance *processInstance) {
 	s.mu.Unlock()
 }
 
-func (s *chanStatus) getCloseChan() <- chan struct{} {
+func (s *chanStatus) getCloseChan() <-chan struct{} {
 	return s.closeChan
 }

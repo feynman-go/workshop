@@ -32,7 +32,7 @@ func TestClientBasic(t *testing.T) {
 	ctx := context.Background()
 
 	action := Action{
-		Partition: true,
+		Partition:    true,
 		PartitionKey: 1,
 		Do: func(ctx context.Context, resource *Resource) error {
 			mc := resource.Get().(mockClient)
@@ -77,7 +77,7 @@ func TestClientRecover(t *testing.T) {
 		if reqCount > 10 {
 			reqCount = 0
 		}
-		return mockClient {
+		return mockClient{
 			RequestCount: &reqCount,
 		}, nil
 	}), breaker.StatusConfig{
@@ -91,7 +91,7 @@ func TestClientRecover(t *testing.T) {
 	ctx := context.Background()
 
 	action := Action{
-		Partition: true,
+		Partition:    true,
 		PartitionKey: 1,
 		Do: func(ctx context.Context, resource *Resource) error {
 			mc := resource.Get().(mockClient)
@@ -120,6 +120,6 @@ func TestClientRecover(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		time.Sleep(time.Second)
 		result := client.Do(ctx, action)
-		log.Println("get err", i , result.Err)
+		log.Println("get err", i, result.Err)
 	}
 }

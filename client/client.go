@@ -10,24 +10,24 @@ import (
 )
 
 const (
-	MiddleNameWaitRetry =  "wait-to-retry"
+	MiddleNameWaitRetry = "wait-to-retry"
 )
 
 type DoOption struct {
-	retry func(err error) bool
-	timeOut time.Duration
-	handler func(ctx context.Context) error
+	retry      func(err error) bool
+	timeOut    time.Duration
+	handler    func(ctx context.Context) error
 	handleFail func(err error) error
 }
 
 type ExecuteResult struct {
-	Try int
+	Try     int
 	Recover int
-	Err error
+	Err     error
 }
 
 type Client struct {
-	promisePool *promise.Pool
+	promisePool  *promise.Pool
 	resourcePool ResourcePool
 }
 
@@ -38,13 +38,13 @@ func New(promisePool *promise.Pool, resourcePool ResourcePool) *Client {
 }
 
 type Action struct {
-	Partition       bool
-	PartitionKey    int
-	Do              func(ctx context.Context, resource *Resource) error
-	Recover         func(ctx context.Context, resource *Resource, err error) (wait time.Duration, ok bool)
-	HandleFail      func(ctx context.Context, err error)
-	MaxTimeOut      time.Duration // zero is useless
-	MinTimeOut      time.Duration // zero is useless
+	Partition    bool
+	PartitionKey int
+	Do           func(ctx context.Context, resource *Resource) error
+	Recover      func(ctx context.Context, resource *Resource, err error) (wait time.Duration, ok bool)
+	HandleFail   func(ctx context.Context, err error)
+	MaxTimeOut   time.Duration // zero is useless
+	MinTimeOut   time.Duration // zero is useless
 }
 
 func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
@@ -63,41 +63,41 @@ func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
 
 func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Middle) {
 	return func(ctx context.Context, request promise.Request) promise.Result {
-		timeout := manager.getRandomTimeout(action)
-		if timeout != 0 {
-			ctx, _ = context.WithTimeout(ctx, timeout)
-		}
-		res, err := manager.resourcePool.Get(ctx, action.Partition, action.PartitionKey)
-		if err != nil {
-			return promise.Result {
-				Err: ErrGetResource,
+			timeout := manager.getRandomTimeout(action)
+			if timeout != 0 {
+				ctx, _ = context.WithTimeout(ctx, timeout)
 			}
-		}
-		if action.Do != nil {
-			er.Try ++
-			err = action.Do(ctx, res)
-		}
-		if err == nil {
-			res.PutBack(false)
-		}
-		return promise.Result{
-			Err: err,
-			Payload: res,
-		}
-	}, []promise.Middle{
-		promise.EventKeyMiddle(action.PartitionKey).WithInheritable(true),
-		promise.PartitionMiddle(action.Partition).WithInheritable(true),
-		promise.WaitMiddle(func(ctx context.Context, request promise.Request) error {
-			payload, ok := request.LastPayload().(recoverPayload)
-			if !ok {
+			res, err := manager.resourcePool.Get(ctx, action.Partition, action.PartitionKey)
+			if err != nil {
+				return promise.Result{
+					Err: ErrGetResource,
+				}
+			}
+			if action.Do != nil {
+				er.Try++
+				err = action.Do(ctx, res)
+			}
+			if err == nil {
+				res.PutBack(false)
+			}
+			return promise.Result{
+				Err:     err,
+				Payload: res,
+			}
+		}, []promise.Middle{
+			promise.EventKeyMiddle(action.PartitionKey).WithInheritable(true),
+			promise.PartitionMiddle(action.Partition).WithInheritable(true),
+			promise.WaitMiddle(func(ctx context.Context, request promise.Request) error {
+				payload, ok := request.LastPayload().(recoverPayload)
+				if !ok {
+					return nil
+				}
+				if payload.waitTime != 0 {
+					return promise.WaitTime(ctx, payload.waitTime)
+				}
 				return nil
-			}
-			if payload.waitTime != 0 {
-				return promise.WaitTime(ctx, payload.waitTime)
-			}
-			return nil
-		}),
-	}
+			}),
+		}
 }
 
 type recoverPayload struct {
@@ -120,18 +120,18 @@ func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) pro
 		}
 
 		if action.Recover == nil { // do retry
-			return promise.Result {
+			return promise.Result{
 				Err: request.LastErr(),
 			}
 		}
-		er.Recover ++
+		er.Recover++
 		wait, ok := action.Recover(ctx, res, request.LastErr())
 		if !ok {
 			return promise.Result{
 				Err: request.LastErr(),
 			}
 		}
-		return promise.Result {
+		return promise.Result{
 			Payload: recoverPayload{
 				waitTime: wait,
 			},
@@ -142,7 +142,7 @@ func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) pro
 func (manager *Client) buildFailedProcess(action Action, er *ExecuteResult) promise.ProcessFunc {
 	return func(ctx context.Context, request promise.Request) promise.Result {
 		if action.HandleFail == nil {
-			return promise.Result {
+			return promise.Result{
 				Err: request.LastErr(),
 			}
 		}
@@ -153,7 +153,7 @@ func (manager *Client) buildFailedProcess(action Action, er *ExecuteResult) prom
 	}
 }
 func (manager *Client) getRandomTimeout(action Action) time.Duration {
-	return time.Duration(fastrand.Uint32n(uint32((action.MaxTimeOut - action.MinTimeOut) / time.Millisecond )) + uint32(action.MinTimeOut / time.Millisecond))
+	return time.Duration(fastrand.Uint32n(uint32((action.MaxTimeOut-action.MinTimeOut)/time.Millisecond)) + uint32(action.MinTimeOut/time.Millisecond))
 }
 
 type ResourcePool interface {
@@ -161,15 +161,15 @@ type ResourcePool interface {
 }
 
 type Resource struct {
-	v interface{}
+	v       interface{}
 	recycle func(abnormal bool)
-	rw sync.RWMutex
+	rw      sync.RWMutex
 	pusBack bool
 }
 
 func NewResource(recycle func(abnormal bool), v interface{}) *Resource {
-	return &Resource {
-		v: v,
+	return &Resource{
+		v:       v,
 		recycle: recycle,
 	}
 }
@@ -208,9 +208,8 @@ func (res *Resource) PutBack(abnormal bool) {
 var ErrGetResource = errors.New("get resource err")
 var ErrResourceAbnormal = errors.New("get resource abnormal")
 
-
 /**
-	help function to build default function
+help function to build default function
 
 */
 const (
@@ -220,22 +219,22 @@ const (
 
 func DefaultAction(do func(ctx context.Context, resource *Resource) error) Action {
 	var maxCount int
-	action := Action {
-		Partition: false,
+	action := Action{
+		Partition:    false,
 		PartitionKey: 1,
-		Do: do,
+		Do:           do,
 		Recover: func(ctx context.Context, resource *Resource, err error) (time.Duration, bool) {
 			if resource != nil {
 				resource.PutBack(true)
 			}
-			maxCount ++
+			maxCount++
 			if maxCount >= 3 {
 				return 0, false
 			}
 			return time.Second, true
 		},
-		MaxTimeOut:      DefaultMaxTimeOut,
-		MinTimeOut:      DefaultMinTimeOut,
+		MaxTimeOut: DefaultMaxTimeOut,
+		MinTimeOut: DefaultMinTimeOut,
 	}
 	return action
 }

@@ -1,4 +1,3 @@
-
 package promise
 
 import (
@@ -36,17 +35,17 @@ func TestPromise(t *testing.T) {
 		var reach bool
 		var failed bool
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, last Request) Result{
+		pms := NewPromise(pool, func(ctx context.Context, last Request) Result {
 			reach = true
 			return Result{
 				Payload: true,
-				Err: errors.New("expect err"),
+				Err:     errors.New("expect err"),
 			}
 		}).OnException(func(ctx context.Context, last Request) Result {
 			failed = true
 			return Result{
 				Payload: false,
-				Err: nil,
+				Err:     nil,
 			}
 		})
 
@@ -76,7 +75,7 @@ func TestPromise(t *testing.T) {
 		pool := NewPool(3)
 		pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
 			return Result{
-				Err: failed,
+				Err:     failed,
 				Payload: true,
 			}
 		})
@@ -93,17 +92,17 @@ func TestPromise(t *testing.T) {
 		var reach bool
 		var failed bool
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, last Request) Result{
+		pms := NewPromise(pool, func(ctx context.Context, last Request) Result {
 			reach = true
 			return Result{
 				Payload: true,
-				Err: errors.New("expect err"),
+				Err:     errors.New("expect err"),
 			}
 		}).OnException(func(ctx context.Context, last Request) Result {
 			failed = true
 			return Result{
 				Payload: false,
-				Err: nil,
+				Err:     nil,
 			}
 		})
 
@@ -134,19 +133,19 @@ func TestPromise(t *testing.T) {
 		pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
 			startTime = time.Now()
 			return Result{
-				Err: nil,
+				Err:     nil,
 				Payload: true,
 			}
-		}, WaitTimeMiddle(100 * time.Millisecond))
+		}, WaitTimeMiddle(100*time.Millisecond))
 
-		ctx, _ := context.WithTimeout(context.Background(), 200 * time.Millisecond)
+		ctx, _ := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		now := time.Now()
 		_, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatal("expect get failed err but get:", err)
 		}
-		if delta := startTime.Sub(now); delta > 110 * time.Millisecond || delta < 100 * time.Millisecond {
-			t.Fatalf("expect Wait %v time but %v:", 100 * time.Millisecond, delta)
+		if delta := startTime.Sub(now); delta > 110*time.Millisecond || delta < 100*time.Millisecond {
+			t.Fatalf("expect Wait %v time but %v:", 100*time.Millisecond, delta)
 		}
 		return
 	})
@@ -184,7 +183,7 @@ func TestPromiseChain(t *testing.T) {
 			t.Errorf("expect return true but return %v", v)
 		}
 
-		for i := 0 ; i < 3; i ++ {
+		for i := 0; i < 3; i++ {
 			if list[i] != i {
 				t.Fatalf("test promise chan not equal id: %v", i)
 			}
@@ -197,23 +196,23 @@ func TestPromiseChain(t *testing.T) {
 		var list = []int{}
 
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) (Result) {
+		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
 			list = append(list, 0)
 			return Result{
 				Payload: true,
 			}
-		}).Then(func(ctx context.Context, request Request) (Result) {
+		}).Then(func(ctx context.Context, request Request) Result {
 			list = append(list, 1)
 			return Result{
 				Payload: true,
 			}
-		}).Then(func(ctx context.Context, request Request) (Result) {
+		}).Then(func(ctx context.Context, request Request) Result {
 			list = append(list, 1)
 			return Result{
 				Payload: true,
-				Err: errors.New("1"),
+				Err:     errors.New("1"),
 			}
-		}).OnException(func(ctx context.Context, request Request) (Result) {
+		}).OnException(func(ctx context.Context, request Request) Result {
 			list[2] = 2
 			return Result{
 				Payload: true,
@@ -230,7 +229,7 @@ func TestPromiseChain(t *testing.T) {
 			t.Errorf("expect return true but return %v", v)
 		}
 
-		for i := 0 ; i < 3; i ++ {
+		for i := 0; i < 3; i++ {
 			if list[i] != i {
 				t.Fatalf("test promise chan not equal id: %v", i)
 			}
@@ -266,7 +265,7 @@ func TestPromiseCloseWait(t *testing.T) {
 			}
 		})
 
-		ctx, _ := context.WithTimeout(context.Background(), 200 * time.Millisecond)
+		ctx, _ := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		_, err := pms.Get(ctx, true)
 		if err != nil {
 			t.Fatalf("Wait timeout should return err nil but %v", err)
@@ -280,11 +279,11 @@ func TestRecovery(t *testing.T) {
 		pool := NewPool(3)
 		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
 			if !recovered {
-				return Result {
+				return Result{
 					Err: errors.New("Process err"),
 				}
 			}
-			return Result {
+			return Result{
 				Payload: true,
 			}
 		}).Recover(func(ctx context.Context, req Request) Result {
@@ -322,7 +321,7 @@ func TestRecovery(t *testing.T) {
 				Payload: true,
 			}
 		}).Recover(func(ctx context.Context, request Request) Result {
-			recovered ++
+			recovered++
 			return Result{}
 		}).HandleException(func(ctx context.Context, req Request) Result {
 			return Result{
@@ -360,7 +359,7 @@ func TestRecovery(t *testing.T) {
 				Payload: true,
 			}
 		}).Recover(func(ctx context.Context, request Request) Result {
-			recovered ++
+			recovered++
 			if recovered >= 100 {
 				failed = true
 				return Result{
@@ -391,7 +390,7 @@ func TestPromiseMultiTimeOut(t *testing.T) {
 	t.Run("test Wait timeout", func(t *testing.T) {
 		gp := &sync.WaitGroup{}
 		pool := NewPool(3)
-		for i := 0 ; i < 100 ; i ++ {
+		for i := 0; i < 100; i++ {
 			gp.Add(1)
 
 			go func() {
@@ -402,7 +401,7 @@ func TestPromiseMultiTimeOut(t *testing.T) {
 					}
 				})
 
-				ctx, _ := context.WithTimeout(context.Background(), 10 * time.Millisecond)
+				ctx, _ := context.WithTimeout(context.Background(), 10*time.Millisecond)
 
 				err := pms.Wait(ctx, true)
 				if err == nil {
@@ -440,14 +439,13 @@ func TestPartitionPromise(t *testing.T) {
 	})
 }
 
-
 func TestLargeRequest(t *testing.T) {
 	var count int32
 	var ppppp int32
 	t.Run("TestLargeRequest", func(t *testing.T) {
 		gp := &sync.WaitGroup{}
 		pool := NewPool(2)
-		for i := 0 ; i < 10 ; i ++ {
+		for i := 0; i < 10; i++ {
 			gp.Add(1)
 
 			go func() {
@@ -459,7 +457,7 @@ func TestLargeRequest(t *testing.T) {
 					}
 				})
 
-				ctx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
+				ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 				err := pms.Wait(ctx, true)
 				if err != nil {
 					t.Fatalf("Wait timeout should return err")

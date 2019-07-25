@@ -12,7 +12,7 @@ func ExamplePromise() {
 	pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
 		// .... Do task
 		return Result{
-			Err: nil,
+			Err:     nil,
 			Payload: 25,
 		}
 	})
@@ -20,7 +20,7 @@ func ExamplePromise() {
 	// close promise will close task context
 	defer pms.Close()
 
-	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
+	ctx, _ := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
@@ -32,9 +32,7 @@ func ExamplePromiseChain() {
 	pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
 		// .... Do task 1
 		log.Println("do task one")
-		return Result{
-
-		}
+		return Result{}
 	}).Then(func(ctx context.Context, req Request) Result {
 		// .... Do task 2
 		log.Println("do task two")
@@ -46,7 +44,7 @@ func ExamplePromiseChain() {
 	// close promise will close task context
 	defer pms.Close()
 
-	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
+	ctx, _ := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
@@ -80,10 +78,9 @@ func ExamplePromiseRetry() {
 	// close promise will close task context
 	defer pms.Close()
 
-	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
+	ctx, _ := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	_, err := pms.Get(ctx, true)
 	if err != nil {
 		// ... Handle err
 	}
 }
-

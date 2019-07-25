@@ -69,7 +69,6 @@ func (st *Status) ConvertToAbnormal() {
 	st.convertToAbnormal()
 }
 
-
 func (st *Status) StatusCode() StatusCode {
 	st.rw.RLock()
 	defer st.rw.RUnlock()
@@ -135,4 +134,3 @@ func (st *Status) convertToNormal() {
 	st.reset()
 	st.key = StatusCodeNormal
 }
-

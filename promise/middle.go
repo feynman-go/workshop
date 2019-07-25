@@ -22,13 +22,12 @@ func (mid Middle) WithName(name string) Middle {
 	return mid
 }
 
-
 func WrapProcess(name string, wrapper func(context.Context, Request, ProcessFunc) Result) Middle {
 	return Middle{
 		Name: name,
 		Wrapper: func(request Request) Request {
 			p := request.Process
-			request.Process = func(ctx context.Context, req Request) Result{
+			request.Process = func(ctx context.Context, req Request) Result {
 				return wrapper(ctx, req, p)
 			}
 			return request
@@ -43,10 +42,9 @@ func WrapTimeout(name string, timeout time.Duration) Middle {
 	})
 }
 
-
 func WaitMiddle(wait func(ctx context.Context, req Request) error) Middle {
 	return Middle{
-		Wrapper: func(request Request) (Request) {
+		Wrapper: func(request Request) Request {
 			request.Wait = wait
 			return request
 		},
@@ -63,16 +61,15 @@ func WaitTime(ctx context.Context, waitTime time.Duration) error {
 	}
 	t.Reset(waitTime)
 	select {
-	case <- t.C:
-	case <- ctx.Done():
+	case <-t.C:
+	case <-ctx.Done():
 		return ctx.Err()
 	}
 	return nil
 }
 
-
 func WaitTimeMiddle(waitTime time.Duration) Middle {
-	return WaitMiddle(func(ctx context.Context, _ Request,) error {
+	return WaitMiddle(func(ctx context.Context, _ Request) error {
 		return WaitTime(ctx, waitTime)
 	})
 }
@@ -103,11 +100,11 @@ var timerPool = &sync.Pool{
 }
 
 type MiddleLink struct {
-	root *MiddleLink
-	fId int
-	next *MiddleLink
+	root      *MiddleLink
+	fId       int
+	next      *MiddleLink
 	inherited *Middle
-	inner []Middle
+	inner     []Middle
 }
 
 func (link *MiddleLink) IncFragmentID() *MiddleLink {
@@ -115,13 +112,13 @@ func (link *MiddleLink) IncFragmentID() *MiddleLink {
 		link.root = link
 	}
 	ml := *link
-	ml.fId ++
+	ml.fId++
 	return &ml
 }
 
 func (link *MiddleLink) Append(md ...Middle) *MiddleLink {
 	var ret = link
-	for _, m := range md{
+	for _, m := range md {
 		ret = ret.append(m)
 	}
 	return link

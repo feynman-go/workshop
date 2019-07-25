@@ -7,7 +7,7 @@ import (
 )
 
 type Balancer struct {
-	rw sync.RWMutex
+	rw       sync.RWMutex
 	instance []*Instance
 	schedule Scheduler
 }
@@ -51,16 +51,16 @@ func (b *Balancer) updateInstanceStatus(i int, score int32) {
 }
 
 type Instance struct {
-	rw sync.RWMutex
+	rw    sync.RWMutex
 	score int32
 	index int
-	v interface{}
-	b *Balancer
+	v     interface{}
+	b     *Balancer
 }
 
 func NewInstance(v interface{}, score int32) *Instance {
 	return &Instance{
-		v: v,
+		v:     v,
 		score: score,
 	}
 }
@@ -119,12 +119,12 @@ type Scheduler interface {
 
 // scheduler implement
 type RoundRobin struct {
-	rw sync.RWMutex
+	rw         sync.RWMutex
 	monotonous uint64
-	list []*robinItem
-	cur uint64
-	sum uint64
-	start int
+	list       []*robinItem
+	cur        uint64
+	sum        uint64
+	start      int
 }
 
 type robinItem struct {
@@ -144,7 +144,7 @@ func (rr *RoundRobin) Pick(partition int64, total int) int {
 
 	i := sort.Search(l, func(i int) bool {
 		r := rr.list[i]
-		return r.score >= 0 && (r.start + uint64(r.score) + 1) > idx
+		return r.score >= 0 && (r.start+uint64(r.score)+1) > idx
 	})
 	if i < 0 || i >= l {
 		return -1

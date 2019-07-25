@@ -13,12 +13,12 @@ import (
 type TaskFunc func(ctx context.Context, localId int)
 
 type Pool struct {
-	status int32
+	status  int32
 	max     int
 	offset  uintptr
 	workers *sync.Map
-	p *sync.Pool
-	closed chan struct{} // Close channel to close pool
+	p       *sync.Pool
+	closed  chan struct{} // Close channel to close pool
 }
 
 func NewPool(maxConcurrent int) *Pool {
@@ -26,12 +26,12 @@ func NewPool(maxConcurrent int) *Pool {
 	pool := &Pool{
 		max:     maxConcurrent,
 		workers: &sync.Map{},
-		closed: closed,
+		closed:  closed,
 		p: &sync.Pool{
 			New: func() interface{} {
 				return &worker{
 					closed: closed,
-					c: make(chan TaskBox),
+					c:      make(chan TaskBox),
 				}
 			},
 		},
@@ -62,9 +62,9 @@ func (pool *Pool) Feed(ctx context.Context, box TaskBox) error {
 func (pool *Pool) tryFeedNoBlock(box TaskBox, id int) bool {
 	var wk = pool.getWorker(id)
 	select {
-	case <- pool.closed:
+	case <-pool.closed:
 		return false
-	case <- box.closed:
+	case <-box.closed:
 		return false
 	case wk.c <- box:
 		return true
@@ -76,25 +76,25 @@ func (pool *Pool) tryFeedNoBlock(box TaskBox, id int) bool {
 func (pool *Pool) tryFeedBlock(ctx context.Context, box TaskBox, id int) bool {
 	var wk = pool.getWorker(id)
 	select {
-	case <- pool.closed:
+	case <-pool.closed:
 		return false
-	case <- box.closed:
+	case <-box.closed:
 		return false
 	case wk.c <- box: // first check not in loop, why? more faster
 		return true
-	case <- ctx.Done():
+	case <-ctx.Done():
 		return false
 	default:
 		//
 		for {
 			select {
-			case <- box.closed:
+			case <-box.closed:
 				return false
-			case <- ctx.Done():
+			case <-ctx.Done():
 				return false
 			case wk.c <- box:
 				return true
-			case <- pool.closed:
+			case <-pool.closed:
 				return false
 			}
 		}
@@ -102,7 +102,7 @@ func (pool *Pool) tryFeedBlock(ctx context.Context, box TaskBox, id int) bool {
 }
 
 func (pool *Pool) startWorkers() {
-	for i := 0 ; i < pool.max; i ++ {
+	for i := 0; i < pool.max; i++ {
 		wk := pool.p.Get()
 		pool.workers.Store(i, wk)
 		go func(wk *worker) {
@@ -145,10 +145,10 @@ func (pool *Pool) getWorker(hashId int) *worker {
 }
 
 type worker struct {
-	idx int
-	mu sync.Mutex
+	idx    int
+	mu     sync.Mutex
 	closed chan struct{}
-	c  chan TaskBox
+	c      chan TaskBox
 }
 
 func (w *worker) run() (err error) {
@@ -164,20 +164,20 @@ func (w *worker) run() (err error) {
 	idx := w.idx
 	for {
 		select {
-		case <- w.closed:
+		case <-w.closed:
 			return nil
 		case box, ok := <-c:
 			if !ok {
 				return nil
 			}
 			newCtx, cancel := context.WithCancel(context.Background())
-			go func(ctx context.Context, taskClose, workerClose <- chan struct{}, cancel func()) {
+			go func(ctx context.Context, taskClose, workerClose <-chan struct{}, cancel func()) {
 				select {
 				case <-workerClose:
 					cancel()
-				case <- taskClose:
+				case <-taskClose:
 					cancel()
-				case <- newCtx.Done():
+				case <-newCtx.Done():
 				}
 			}(newCtx, box.closed, w.closed, cancel)
 			box.f(newCtx, idx)
@@ -187,8 +187,8 @@ func (w *worker) run() (err error) {
 }
 
 type TaskBox struct {
-	closed <- chan struct{}
-	f TaskFunc
+	closed   <-chan struct{}
+	f        TaskFunc
 	stubborn bool
-	localId int
+	localId  int
 }

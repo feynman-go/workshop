@@ -11,19 +11,19 @@ import (
 type Refresher func(last interface{}) (new interface{}, err error)
 
 type memoryPool struct {
-	rw sync.RWMutex
-	rmp map[*resourceInstance]int
+	rw     sync.RWMutex
+	rmp    map[*resourceInstance]int
 	indies []*resourceInstance
 }
 
 func NewMemoryPool(count int, refresher Refresher, config breaker.StatusConfig) ResourcePool {
 	ret := &memoryPool{
 		indies: []*resourceInstance{},
-		rmp: map[*resourceInstance]int{},
+		rmp:    map[*resourceInstance]int{},
 	}
-	for i := 0 ; i < count; i ++ {
+	for i := 0; i < count; i++ {
 		instance := &resourceInstance{
-			status: breaker.NewStatus(config),
+			status:  breaker.NewStatus(config),
 			refresh: refresher,
 		}
 		ret.indies = append(ret.indies, instance)
@@ -32,7 +32,7 @@ func NewMemoryPool(count int, refresher Refresher, config breaker.StatusConfig) 
 	return ret
 }
 
-func(mp *memoryPool) Get(ctx context.Context, partition bool, partitionKey int) (*Resource, error) {
+func (mp *memoryPool) Get(ctx context.Context, partition bool, partitionKey int) (*Resource, error) {
 	mp.rw.RLock()
 	l := len(mp.indies)
 	if l == 0 {
@@ -55,17 +55,17 @@ func(mp *memoryPool) Get(ctx context.Context, partition bool, partitionKey int) 
 	return NewResource(mp.putBackFunc(ri), v), nil
 }
 
-func(mp *memoryPool) putBackFunc(ri *resourceInstance) func(abnormal bool) {
+func (mp *memoryPool) putBackFunc(ri *resourceInstance) func(abnormal bool) {
 	return func(abnormal bool) {
 		ri.record(abnormal)
 	}
 }
 
 type resourceInstance struct {
-	status *breaker.Status
-	rw sync.RWMutex
-	v interface{}
-	refresh Refresher
+	status     *breaker.Status
+	rw         sync.RWMutex
+	v          interface{}
+	refresh    Refresher
 	refreshErr error
 }
 
@@ -113,4 +113,3 @@ func (res *resourceInstance) reset() {
 		}
 	}
 }
-

@@ -24,7 +24,7 @@ func BenchmarkStore(b *testing.B) {
 		for pb.Next() {
 			_, ld := store.LoadOrStore(ResourceKey{
 				Category: "ccccccc",
-				ID: "",
+				ID:       "",
 			}, "c")
 			if !ld {
 				n := atomic.AddInt32(&c, 1)
