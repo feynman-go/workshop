@@ -2,16 +2,68 @@ package promise
 
 import (
 	"context"
+	"net/textproto"
 	"sync"
 )
 
 type Request struct {
 	from      *processInstance
-	Wait      func(ctx context.Context, req Request) error
-	Partition bool
-	EventKey  int
+	partition bool
+	eventKey  int
+	head textproto.MIMEHeader
+}
+
+func (r Request) WithHead(key, value string) Request {
+	if r.head == nil {
+		r.head = textproto.MIMEHeader{}
+	}
+	r.head.Set(key, value)
+	return r
+}
+
+func (r Request) PromiseKey() int {
+	return r.eventKey
+}
+
+func (r Request) Partition() bool {
+	return r.partition
+}
+
+func (r Request) GetHead(key string) string {
+	return r.head.Get(key)
+}
+
+func (r Request) RangeHead(iter func(k, v string) bool) {
+	if r.head != nil {
+		for k := range r.head {
+			if !iter(k, r.head.Get(k)) {
+				break
+			}
+		}
+	}
+}
+
+type Profile struct {
+	req *Request
+	Wait func(ctx context.Context, req Request) error
 	Process   ProcessFunc
 	MiddleEnd bool
+}
+
+func (p Profile) SetPartition( partition bool) {
+	p.req.partition = partition
+}
+
+func (p Profile) GetPartition() bool {
+	return p.req.partition
+}
+
+func (p Profile) SetPromiseKey(eventKey int) {
+	p.req.eventKey = eventKey
+}
+
+func (p Profile) GetPromiseKey() int {
+	return p.req.eventKey
 }
 
 func (r Request) LastErr() error {
@@ -171,9 +223,9 @@ func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 		f:      taskFunc,
 	}
 
-	if req.Partition {
+	if req.partition {
 		task.stubborn = true
-		task.localId = int(req.EventKey)
+		task.localId = int(req.eventKey)
 	}
 
 	return task
@@ -182,20 +234,22 @@ func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error {
 	req := Request{
 		from:    lastProcess,
-		Process: p.process,
 	}
+
+	profile := Profile{req: &req, Process: p.process}
+
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		var err error
 		if ms := p.middles; ms != nil {
 			ms.Range(func(middle Middle) bool {
 				if middle.Wrapper != nil {
-					req = middle.Wrapper(req)
+					profile = middle.Wrapper(profile)
 				}
-				return !req.MiddleEnd
+				return !profile.MiddleEnd
 			})
 		}
-		if req.Wait != nil { //Wait func
+		if profile.Wait != nil { //Wait func
 			go func() {
 				select {
 				case <-p.getCloseChan():
@@ -203,11 +257,11 @@ func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error 
 				case <-ctx.Done():
 				}
 			}()
-			err = req.Wait(ctx, req)
+			err = profile.Wait(ctx, req)
 		}
 		if err == nil {
 			err = p.pool.Feed(ctx, p.newTaskBox(req, func(ctx context.Context, localId int) {
-				p.doProcess(ctx, req)
+				p.doProcess(ctx, profile)
 			}))
 		}
 		cancel()
@@ -218,14 +272,15 @@ func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error 
 	return nil
 }
 
-func (p *Promise) doProcess(ctx context.Context, req Request) {
+func (p *Promise) doProcess(ctx context.Context, profile Profile) {
+	req := *profile.req
 	instance := &processInstance{
 		Req: req,
 	}
 
-	var err = req.LastErr()
-	if req.Process != nil {
-		result := req.Process(ctx, req)
+	var err = profile.req.LastErr()
+	if p := profile.Process; p != nil {
+		result := p(ctx, req)
 		instance.Result = &result
 		err = instance.Result.Err
 	}

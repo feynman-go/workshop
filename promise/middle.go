@@ -8,8 +8,9 @@ import (
 
 type Middle struct {
 	Name        string
-	Wrapper     func(process Request) Request
+	Wrapper     func(process Profile) Profile
 	Inheritable bool
+	Labels map[string]string
 }
 
 func (mid Middle) WithInheritable(inheritable bool) Middle {
@@ -22,29 +23,28 @@ func (mid Middle) WithName(name string) Middle {
 	return mid
 }
 
-func WrapProcess(name string, wrapper func(context.Context, Request, ProcessFunc) Result) Middle {
+func WrapProcess(name string, wrapper func(ProcessFunc) ProcessFunc ) Middle {
 	return Middle{
 		Name: name,
-		Wrapper: func(request Request) Request {
-			p := request.Process
-			request.Process = func(ctx context.Context, req Request) Result {
-				return wrapper(ctx, req, p)
-			}
+		Wrapper: func(request Profile) Profile {
+			request.Process = wrapper(request.Process)
 			return request
 		},
 	}
 }
 
 func WrapTimeout(name string, timeout time.Duration) Middle {
-	return WrapProcess(name, func(ctx context.Context, req Request, p ProcessFunc) Result {
-		ctx, _ = context.WithTimeout(ctx, timeout)
-		return p(ctx, req)
+	return WrapProcess(name, func(p ProcessFunc) ProcessFunc {
+		return func(ctx context.Context, req Request) Result {
+			ctx , _ = context.WithTimeout(ctx, timeout)
+			return p(ctx, req)
+		}
 	})
 }
 
 func WaitMiddle(wait func(ctx context.Context, req Request) error) Middle {
 	return Middle{
-		Wrapper: func(request Request) Request {
+		Wrapper: func(request Profile) Profile {
 			request.Wait = wait
 			return request
 		},
@@ -76,8 +76,8 @@ func WaitTimeMiddle(waitTime time.Duration) Middle {
 
 func PartitionMiddle(partition bool) Middle {
 	return Middle{
-		Wrapper: func(request Request) Request {
-			request.Partition = partition
+		Wrapper: func(request Profile) Profile {
+			request.SetPartition(partition)
 			return request
 		},
 	}
@@ -85,8 +85,8 @@ func PartitionMiddle(partition bool) Middle {
 
 func EventKeyMiddle(eventKey int) Middle {
 	return Middle{
-		Wrapper: func(request Request) Request {
-			request.EventKey = eventKey
+		Wrapper: func(request Profile) Profile {
+			request.SetPromiseKey(eventKey)
 			return request
 		},
 	}
@@ -119,23 +119,23 @@ func (link *MiddleLink) IncFragmentID() *MiddleLink {
 func (link *MiddleLink) Append(md ...Middle) *MiddleLink {
 	var ret = link
 	for _, m := range md {
-		ret = ret.append(m)
+		ret = ret.insertNext(m)
 	}
 	return link
 }
 
-func (link *MiddleLink) append(md Middle) *MiddleLink {
+func (link *MiddleLink) insertNext(md Middle) *MiddleLink {
 	// init root
 	if link.root == nil {
 		link.root = link
 	}
 
-	for link.next != nil {
-		link = link.next
-	}
 	if md.Inheritable {
 		newLink := *link
 		newLink.inherited = &md
+		if link.next != nil {
+			newLink.next = link.next
+		}
 		link.next = &newLink
 		return &newLink
 	} else {
@@ -150,7 +150,7 @@ func (link *MiddleLink) Range(walk func(middle Middle) bool) {
 	}
 	var ctn = true
 	cur := link.root
-	for cur != nil && ctn {
+	for ctn && cur != nil && cur.fId <= link.fId {
 		if cur.inherited != nil {
 			ctn = walk(*cur.inherited)
 		}

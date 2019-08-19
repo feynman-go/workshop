@@ -39,9 +39,9 @@ type Repository struct {
 	errHandler     ErrHandler
 }
 
-func NewRepository(handler *ResourceHandlers, monitor RepositoryMonitor, logger *zap.Logger, throughLimiter *rate.Limiter) *Repository {
+func NewRepository(handler *ResourceHandlers, monitor RepositoryMonitor, logger *zap.Logger, throughLimit rate.Limit) *Repository {
 	return &Repository{
-		throughLimiter: throughLimiter,
+		throughLimiter: rate.NewLimiter(throughLimit, 1),
 		st:             handler,
 		ch:             handler,
 		handles:        new(sync.Map),
@@ -102,9 +102,6 @@ func (rep *Repository) recordFind(key ResourceKey, hit bool, downgrade bool, err
 func (rep *Repository) throughToStore(ctx context.Context, id ResourceKey) (*Resource, error) {
 	var err error
 	var res *Resource
-	if !rep.tryThrough(ctx) {
-		return nil, ErrStoreLimited
-	}
 
 	_, err = rep.tryUpdate(ctx, id)
 	if err != nil {
@@ -192,6 +189,9 @@ func (rep *Repository) tryUpdate(ctx context.Context, id ResourceKey) (bool, err
 			rep.handles.Delete(id)
 			hd.release()
 		}()
+		if !rep.tryThrough(ctx) {
+			return ok, ErrStoreLimited
+		}
 		_, err = rep.SyncCache(ctx, id)
 	}
 
@@ -249,7 +249,7 @@ func (rep *Repository) tryThrough(ctx context.Context) bool {
 
 // monitor interface
 type RepositoryMonitor interface {
-	AddFindRecord(key ResourceKey, hit bool, downgrade bool, err error, duration time.Duration)
+	AddFindRecord(key ResourceKey, hit bool, downgrade bool, err error, total time.Duration)
 }
 
 // monitor interface
