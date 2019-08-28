@@ -35,14 +35,16 @@ type Status int
 
 func (status Status) String() string {
 	switch status {
+	case StatusCreated:
+		return "created"
 	case StatusInit:
 		return "init"
 	case StatusWaitingExec:
-		return "waiting_exec"
+		return "waiting exec"
 	case StatusExecuting:
 		return "executing"
 	case StatusExecuteFinished:
-		return "exec_finished"
+		return "exec finished"
 	case StatusClosed:
 		return "closed"
 	default:
@@ -196,27 +198,30 @@ func (task *Task) ExecOvertime(now time.Time) bool {
 
 
 func (task *Task) Status() Status {
+	var status Status
 	if task.Closed() {
-		return StatusClosed
+		status = StatusClosed
+		return status
 	}
 
 	var now = time.Now()
 	if exc, ok := task.CurrentExecution(); ok {
 		switch {
 		case exc.WaitingStart(now) || exc.ReadyToStart(now):
-			return StatusWaitingExec
+			status = StatusWaitingExec
 		case exc.Started(now):
-			return StatusExecuting
+			status = StatusExecuting
 		case exc.Ended(now):
-			return StatusExecuteFinished
+			status = StatusExecuteFinished
 		default:
-			return StatusUnknown
+			status = StatusUnknown
 		}
+	} else if !task.LiveTime.IsZero() {
+		status = StatusInit
+	} else {
+		status = StatusCreated
 	}
-	if task.LiveTime.IsZero() {
-		return StatusInit
-	}
-	return StatusCreated
+	return status
 }
 
 

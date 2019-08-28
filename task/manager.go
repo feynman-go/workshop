@@ -5,12 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"github.com/feynman-go/workshop/promise"
+	"log"
 	"math/rand"
 	"time"
 )
 
 type Executor interface {
 	StartExecution(cb *Context) error
+}
+
+type FuncExecutor func(cb *Context) error
+func (fe FuncExecutor) StartExecution(cb *Context) error {
+	return fe(cb)
 }
 
 type Context struct {
@@ -29,7 +35,7 @@ func (cb *Context) Unique() string {
 }
 
 func (cb *Context) Callback(ctx context.Context, res ExecResult) error {
-	_, err := cb.manager.TaskCallback(ctx, cb.unique, cb.execution.Session, res)
+	err := cb.manager.TaskCallback(ctx, cb.unique, cb.execution.Session, res)
 	return err
 }
 
@@ -41,7 +47,7 @@ type Manager struct {
 	scheduler          Scheduler
 }
 
-func NewManager(repository Repository, executor Executor, scheduler Scheduler) *Manager {
+func NewManager(repository Repository, scheduler Scheduler, executor Executor) *Manager {
 	p := promise.NewPool(4)
 	return &Manager{
 		taskSessionTimeOut: 2*time.Minute - time.Duration(rand.Int31n(60))*time.Second,
@@ -60,6 +66,9 @@ func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) (*Task, error) 
 
 	if desc.Strategy.MaxDuration == 0 {
 		desc.Strategy.MaxDuration = time.Second
+	}
+	if desc.Strategy.MaxRetryTimes == 0 {
+		desc.Strategy.MaxRetryTimes = 1
 	}
 
 	t.UpdateExecStrategy(desc.Strategy)
@@ -125,30 +134,13 @@ func (svc *Manager) startExec(ctx context.Context, unique string, execution Exec
 	return
 }
 
-func (svc *Manager) TaskCallback(ctx context.Context, unique string, session Session, result ExecResult) (*Task, error) {
+func (svc *Manager) TaskCallback(ctx context.Context, unique string, session Session, result ExecResult) error {
 	t, err := svc.repository.ReadSessionTask(ctx, unique, session)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	if t.OnExecution() {
-		t.CloseExec(result)
-		er, _ := t.CurrentExecution()
-
-		if er.Result.ExecResultType == ExecResultTypeSuccess {
-			svc.closeTask(ctx, t, CloseTypeSuccess)
-		} else {
-			ok, err := svc.retryTask(ctx, t)
-			if err != nil {
-				defer svc.repository.ReleaseTaskSession(ctx, t.Unique, t.Session.SessionID)
-				return t, err
-			}
-			if !ok {
-				svc.closeTask(ctx, t, CloseTypeNoMoreRetry)
-			}
-		}
-	}
-	return t, nil
+	return svc.processTask(ctx, t)
 }
 
 func (svc *Manager) closeTask(ctx context.Context, t *Task, closeType CloseType) error {
@@ -174,7 +166,7 @@ func (svc *Manager) planExecutionSchedule(ctx context.Context, t *Task) error {
 }
 
 func (svc *Manager) retryTask(ctx context.Context, t *Task) (bool, error) {
-	if t.CanRetry() {
+	if !t.CanRetry() {
 		return false, nil
 	}
 	err := svc.readyTask(ctx, t, false)
@@ -188,25 +180,24 @@ func (svc *Manager) readyTask(ctx context.Context, t *Task, overlap bool) error 
 	err := t.ReadyNewExec(overlap, t.Session)
 	if err != nil {
 		defer svc.repository.ReleaseTaskSession(ctx, t.Unique, t.Session.SessionID)
+		log.Println("ready new task:", err)
 		return err
 	}
 
 	err = svc.repository.UpdateTask(ctx, t)
 	if err != nil {
 		defer svc.repository.ReleaseTaskSession(ctx, t.Unique, t.Session.SessionID)
+		log.Println("update task err:", err)
 		return err
 	}
 
 	err = svc.planExecutionSchedule(ctx, t)
 	if err != nil {
 		defer svc.repository.ReleaseTaskSession(ctx, t.Unique, t.Session.SessionID)
+		log.Println("release task session:", err)
 		return err
 	}
 	return nil
-}
-
-func (svc *Manager) schedule(ctx context.Context, unique string, er Execution, maxDuration time.Duration) error {
-	return svc.scheduler.EnableTaskClock(ctx, unique, er.ExpectStartTime.Add(maxDuration))
 }
 
 func (svc *Manager) retryTaskOrClose(ctx context.Context, task *Task) (retry bool, err error) {
@@ -264,7 +255,7 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 }
 
 func (svc *Manager) runSupervisor(ctx context.Context) error {
-	for ctx.Err() != nil {
+	for ctx.Err() == nil {
 		taskKey, _, err := svc.scheduler.WaitTaskAwaken(ctx)
 		if err != nil {
 			if err == context.Canceled || err == context.DeadlineExceeded {
@@ -272,12 +263,11 @@ func (svc *Manager) runSupervisor(ctx context.Context) error {
 			}
 			return err
 		}
-
 		task, err := svc.repository.OccupyTask(ctx, taskKey, svc.taskSessionTimeOut)
 		if err != nil {
+			log.Println("repository OccupyTask err:", err)
 			continue
 		}
-
 		err = svc.processTask(ctx, task)
 		if err != nil {
 			return err
