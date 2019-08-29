@@ -118,10 +118,15 @@ type taskCtn struct {
 }
 
 func (ctn *taskCtn) getTask() *Task {
+	var t = &Task{}
 	ctn.rw.RLock()
 	defer ctn.rw.RUnlock()
-	var t = &Task{}
 	*t = *ctn.task
+	t.Executions = make([]*Execution, 0, len(t.Executions))
+	for _, ex := range ctn.task.Executions {
+		e := *ex
+		t.Executions = append(t.Executions, &e)
+	}
 	return t
 }
 
@@ -225,6 +230,11 @@ func (ms *MemoRepository) UpdateTask(ctx context.Context, task *Task) error {
 	before := ctn.getTask().Status()
 	ok = ctn.updateBySession(task.Session.SessionID, func(t *Task) {
 		*t = *task
+		t.Executions = make([]*Execution, 0, len(t.Executions))
+		for _, ex := range task.Executions {
+			e := *ex
+			t.Executions = append(t.Executions, &e)
+		}
 		ms.onTaskStatusChange(before, t.Status(), t.Key)
 	})
 

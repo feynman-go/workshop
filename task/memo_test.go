@@ -51,5 +51,12 @@ func TestManagerBasic(t *testing.T) {
 	if task != nil {
 		t.Fatal("status not closed")
 	}
+
+	sm, err := rep.GetTaskSummary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Log(sm.StatusCount)
 }
 
