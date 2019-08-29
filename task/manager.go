@@ -30,7 +30,7 @@ func (cb *Context) Execution() Execution {
 	return cb.execution
 }
 
-func (cb *Context) Unique() string {
+func (cb *Context) TaskKey() string {
 	return cb.unique
 }
 
