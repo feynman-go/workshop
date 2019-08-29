@@ -43,5 +43,13 @@ func TestManagerBasic(t *testing.T) {
 	g.Wait()
 
 	time.Sleep(2 * time.Second)
+
+	task, err := rep.ReadTask(context.Background(), "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task != nil {
+		t.Fatal("status not closed")
+	}
 }
 

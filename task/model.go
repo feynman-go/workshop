@@ -274,7 +274,7 @@ func (task *Task) Close(closeType CloseType) {
 }
 
 func (task *Task) Closed() bool {
-	if task.CloseType != 0 {
+	if !task.EndTime.IsZero() {
 		return true
 	}
 	return false

@@ -128,21 +128,7 @@ func (svc *Manager) handleStartTimeOn(ctx context.Context, task *Task) (err erro
 	return err
 }
 
-func (svc *Manager) startExec(ctx context.Context, taskKey string, execution *Execution) {
-	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
-		err := svc.executor.StartExecution(Context{
-			Context:   ctx,
-			manager:   svc,
-			taskKey:    taskKey,
-			execution: execution,
-		})
-		return promise.Result{
-			Err: err,
-		}
-	})
-	p.Start(ctx)
-	return
-}
+
 
 func (svc *Manager) TaskCallback(ctx context.Context, taskKey string, exec *Execution, result ExecResult) error {
 	t, err := svc.repository.OccupyTask(ctx, taskKey, svc.taskSessionTimeOut)
@@ -200,17 +186,28 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	return err
 }
 
+func (svc *Manager) startExec(ctx context.Context, taskKey string, execution *Execution) {
+	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
+		err := svc.executor.StartExecution(Context{
+			Context:   ctx,
+			manager:   svc,
+			taskKey:    taskKey,
+			execution: execution,
+		})
+		return promise.Result{
+			Err: err,
+		}
+	})
+	p.Start(ctx)
+	return
+}
 
 func (svc *Manager) closeTask(ctx context.Context, t *Task, closeType CloseType) error {
-	svc.scheduler.DisableTaskClock(ctx, t.Key)
+	defer svc.scheduler.DisableTaskClock(ctx, t.Key)
 	t.Close(closeType)
 	err := svc.repository.UpdateTask(ctx, t)
 	if err != nil {
-		defer svc.repository.ReleaseTaskSession(ctx, t.Key, t.Session.SessionID)
 		return err
-	}
-	if t.Closed() {
-		defer svc.repository.ReleaseTaskSession(ctx, t.Key, t.Session.SessionID)
 	}
 	return nil
 }

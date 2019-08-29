@@ -236,7 +236,7 @@ func (ms *MemoRepository) UpdateTask(ctx context.Context, task *Task) error {
 
 func (ms *MemoRepository) ReadTask(ctx context.Context, taskKey string) (*Task, error) {
 	v, ok := ms.store.Get(taskKey)
-	if !ok {
+	if !ok || v == nil {
 		return nil, nil
 	}
 	ctn := v.(*taskCtn)
