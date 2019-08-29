@@ -11,27 +11,35 @@ import (
 
 var _ Scheduler = (*MemoScheduler)(nil)
 
-type taskPair struct {
+type schedule struct {
 	taskKey         string
 	expectStartTime time.Time
+	awakenDuration time.Duration
 }
 
 type MemoScheduler struct {
 	m        *sync.Map
-	pairChan chan taskPair
+	pairChan chan schedule
+	awakenDuration time.Duration
 }
 
-func NewMemoScheduler() *MemoScheduler {
+func NewMemoScheduler(awakenDuration time.Duration) *MemoScheduler {
 	return &MemoScheduler{
 		m:        &sync.Map{},
-		pairChan: make(chan taskPair, 64),
+		pairChan: make(chan schedule, 64),
+		awakenDuration: awakenDuration,
 	}
 }
 
 func (scheduler *MemoScheduler) EnableTaskClock(ctx context.Context, taskKey string, expectStartTime time.Time) error {
-	scheduler.m.Store(taskKey, expectStartTime)
+	pair := schedule{
+		taskKey: taskKey,
+		expectStartTime: expectStartTime,
+		awakenDuration: scheduler.awakenDuration,
+	}
+	scheduler.m.Store(taskKey, pair)
 	time.AfterFunc(time.Now().Sub(expectStartTime), func() {
-		scheduler.pairChan <- taskPair{taskKey, expectStartTime}
+		scheduler.pairChan <- pair
 	})
 	return nil
 }
@@ -41,18 +49,34 @@ func (scheduler *MemoScheduler) DisableTaskClock(ctx context.Context, taskKey st
 }
 
 func (scheduler *MemoScheduler) WaitTaskAwaken(ctx context.Context) (taskKey string, expectStartTime time.Time, err error) {
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-		return
-	case pair, _ := <-scheduler.pairChan:
-		_, ok := scheduler.m.Load(pair.taskKey)
-		if ok {
-			taskKey = pair.taskKey
-			expectStartTime = pair.expectStartTime
+	tk := time.NewTicker(time.Second)
+	defer tk.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return
+		case <- tk.C:
+			scheduler.m.Range(func(k, v interface{}) bool {
+				s := v.(schedule)
+				if s.expectStartTime.Add(s.awakenDuration).Before(time.Now()) {
+					select {
+					case scheduler.pairChan <- s:
+					default:
+					}
+				}
+				return true
+			})
+		case pair, _ := <-scheduler.pairChan:
+			_, ok := scheduler.m.Load(pair.taskKey)
+			if ok {
+				taskKey = pair.taskKey
+				expectStartTime = pair.expectStartTime
+			}
+			return
 		}
-		return
 	}
+
 }
 
 var _ Repository = (*MemoRepository)(nil)
@@ -139,18 +163,18 @@ func newMemoCtn(task *Task) *taskCtn {
 	}
 }
 
-func (ms *MemoRepository) OccupyTask(ctx context.Context, unique string, sessionTimeout time.Duration) (*Task, error) {
+func (ms *MemoRepository) OccupyTask(ctx context.Context, taskKey string, sessionTimeout time.Duration) (*Task, error) {
 	s := Session{
 		SessionID:      int64(rand.Uint32()),
 		SessionExpires: time.Now().Add(sessionTimeout),
 	}
 	t := &Task{
-		Unique: unique,
+		Key: taskKey,
 	}
 
 	// load data
 	ms.m.Lock()
-	v, loaded := ms.store.Load(unique, newMemoCtn(t))
+	v, loaded := ms.store.Load(taskKey, newMemoCtn(t))
 	ctn := v.(*taskCtn)
 	if !loaded {
 		ms.statusIndex[ctn.getTask().Status()]++
@@ -159,32 +183,15 @@ func (ms *MemoRepository) OccupyTask(ctx context.Context, unique string, session
 
 	before := ctn.getTask().Status()
 	if !ctn.occupyTask(s, func(task *Task) {
-		ms.onTaskStatusChange(before, task.Status(), task.Unique)
+		ms.onTaskStatusChange(before, task.Status(), task.Key)
 	}) {
 		return ctn.getTask(), nil
 	}
 	return ctn.getTask(), nil
 }
 
-func (ms *MemoRepository) ReadSessionTask(ctx context.Context, unique string, session Session) (*Task, error) {
-	v, ok := ms.store.Get(unique)
-	if !ok {
-		return nil, errors.New("not exists")
-	}
-	ctn := v.(*taskCtn)
-	ok = ctn.updateBySession(session.SessionID, func(t *Task) {
-		t.Session.SessionExpires = session.SessionExpires
-	})
-
-	if !ok {
-		return nil, errors.New("session not accept")
-	}
-
-	return ctn.getTask(), nil
-}
-
-func (ms *MemoRepository) ReleaseTaskSession(ctx context.Context, unique string, sessionID int64) error {
-	v, ok := ms.store.Get(unique)
+func (ms *MemoRepository) ReleaseTaskSession(ctx context.Context, taskKey string, sessionID int64) error {
+	v, ok := ms.store.Get(taskKey)
 	if !ok {
 		return nil
 	}
@@ -196,11 +203,20 @@ func (ms *MemoRepository) ReleaseTaskSession(ctx context.Context, unique string,
 	if !ok {
 		return nil
 	}
+
+	ms.m.Lock()
+	defer ms.m.Unlock()
+
+	t := ctn.getTask()
+	if t.Status() == StatusClosed && t.CloseType == CloseTypeSuccess {
+		ms.store.Delete(taskKey)
+	}
+
 	return nil
 }
 
 func (ms *MemoRepository) UpdateTask(ctx context.Context, task *Task) error {
-	v, ok := ms.store.Get(task.Unique)
+	v, ok := ms.store.Get(task.Key)
 	if !ok {
 		return errors.New("task not found")
 	}
@@ -209,7 +225,7 @@ func (ms *MemoRepository) UpdateTask(ctx context.Context, task *Task) error {
 	before := ctn.getTask().Status()
 	ok = ctn.updateBySession(task.Session.SessionID, func(t *Task) {
 		*t = *task
-		ms.onTaskStatusChange(before, t.Status(), t.Unique)
+		ms.onTaskStatusChange(before, t.Status(), t.Key)
 	})
 
 	if !ok {
@@ -218,8 +234,8 @@ func (ms *MemoRepository) UpdateTask(ctx context.Context, task *Task) error {
 	return nil
 }
 
-func (ms *MemoRepository) ReadTask(ctx context.Context, unique string) (*Task, error) {
-	v, ok := ms.store.Get(unique)
+func (ms *MemoRepository) ReadTask(ctx context.Context, taskKey string) (*Task, error) {
+	v, ok := ms.store.Get(taskKey)
 	if !ok {
 		return nil, nil
 	}
@@ -242,7 +258,7 @@ func (ms *MemoRepository) GetTaskSummary(ctx context.Context) (*Summery, error) 
 	}, nil
 }
 
-func (ms *MemoRepository) onTaskStatusChange(before, current Status, unique string) {
+func (ms *MemoRepository) onTaskStatusChange(before, current Status, taskKey string) {
 	ms.m.Lock()
 	defer ms.m.Unlock()
 

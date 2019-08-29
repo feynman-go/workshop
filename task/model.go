@@ -63,7 +63,7 @@ const (
 type ResultType int
 
 type Task struct {
-	Unique          string        `bson:"_id"`
+	Key             string        `bson:"_id"`
 	ExecStrategy    ExecStrategy  `bson:"strategy"`
 	CreateTime      time.Time     `bson:"create_time"`
 	LiveTime        time.Time     `bson:"live_time"`
@@ -72,7 +72,7 @@ type Task struct {
 	HandlerID       int64         `bson:"handler_id"`
 	HandlerSequence int64         `bson:"handler_seq"`
 	//Status          Status        `bson:"status"`
-	Executions []Execution `bson:"execs"`
+	Executions []*Execution `bson:"execs"`
 	Session    Session     `bson:"session"`
 	CloseType  CloseType   `bson:"closeType"`
 }
@@ -84,7 +84,7 @@ type Session struct {
 
 func TaskFromDesc(desc Desc) *Task {
 	t := &Task{
-		Unique:     desc.Unique,
+		Key:        desc.TaskKey,
 		CreateTime: time.Now(),
 	}
 	t.UpdateExecStrategy(desc.Strategy)
@@ -97,41 +97,43 @@ func (task *Task) Init() {
 	}
 }
 
-func (task *Task) ReadyNewExec(force bool, session Session) (err error) {
+func (task *Task) ReadyNewExec(forceClose bool) (err error) {
 	if task.LiveTime.IsZero() {
 		task.LiveTime = time.Now()
 	}
+	var (
+		execSeq = len(task.Executions)
+		expectStartTime time.Time
+	)
 
-	er := Execution{}
-	er.ExecSeq = len(task.Executions)
 	if !task.CanRetry() {
 		return ErrOverMaxRetry
 	}
 
-	if task.OnExecution() && !force {
+	cur := task.CurrentExecution()
+	if task.OnExecution() && !forceClose {
 		return ErrExecuting
-	} else {
-		task.CancelExec("force startExec new")
+	} else if cur != nil {
+		task.CancelExec("force startExec new", cur.Seq())
 	}
 
-	now := time.Now()
-	_, ext := task.CurrentExecution()
 
-	er.CreateTime = now
-	if !ext {
-		er.ExpectStartTime = task.ExecStrategy.ExpectStartTime
+	now := time.Now()
+	if cur == nil {
+		expectStartTime = task.ExecStrategy.ExpectStartTime
 	} else {
 		maxWait := int32((task.ExecStrategy.MaxRetryWait) / time.Millisecond)
 		minWait := int32((task.ExecStrategy.MinRetryWait) / time.Millisecond)
 		waitTime := time.Duration(minWait+rand.Int31n(maxWait-minWait)) * time.Millisecond
 		if waitTime >= 0 {
-			er.ExpectStartTime = now.Add(waitTime)
+			expectStartTime = now.Add(waitTime)
 		}
 	}
-	if er.ExpectStartTime.IsZero() {
-		er.ExpectStartTime = now
+	if expectStartTime.IsZero() {
+		expectStartTime = now
 	}
-	er.Session = session
+
+	er := NewExecution(execSeq, expectStartTime)
 	task.Executions = append(task.Executions, er)
 	return nil
 }
@@ -144,55 +146,56 @@ func (task *Task) CanRetry() bool {
 }
 
 func (task *Task) StartCurrentExec(now time.Time) (Execution, bool) {
-	er, ext := task.CurrentExecution()
-	if !ext {
+	er := task.CurrentExecution()
+	if er == nil {
 		return Execution{}, false
 	}
 
 	if !er.ReadyToStart(now) {
-		return er, false
+		return *er, false
 	}
-	er.StartTime = now
-	return er, true
+
+	er.startTime = now
+	return *er, true
 }
 
-func (task *Task) CurrentExecution() (Execution, bool) {
+func (task *Task) CurrentExecution() *Execution {
 	if len(task.Executions) == 0 {
-		return Execution{}, false
+		return nil
 	}
-	return task.Executions[len(task.Executions)-1], true
+	return task.Executions[len(task.Executions)-1]
 }
 
 func (task *Task) WaitOvertime(now time.Time) bool {
-	exec, ok := task.CurrentExecution()
-	if !ok {
+	exec := task.CurrentExecution()
+	if exec == nil {
 		return false
 	}
-	return exec.ExpectStartTime.Add(task.ExecStrategy.MaxDuration).Before(now)
+	return exec.expectStartTime.Add(task.ExecStrategy.MaxDuration).Before(now)
 }
 
 func (task *Task) ReadyExec(now time.Time) bool {
-	exec, ok := task.CurrentExecution()
-	if !ok {
+	exec := task.CurrentExecution()
+	if exec == nil {
 		return false
 	}
-	if exec.ReadyToStart(now) && exec.ExpectStartTime.Add(task.ExecStrategy.MaxDuration).After(now) {
+	if exec.ReadyToStart(now) && exec.expectStartTime.Add(task.ExecStrategy.MaxDuration).After(now) {
 		return true
 	}
 	return false
 }
 
 func (task *Task) ExecOvertime(now time.Time) bool {
-	exec, ok := task.CurrentExecution()
-	if !ok {
+	exec := task.CurrentExecution()
+	if exec == nil {
 		return false
 	}
 
-	if !exec.Started(now) {
+	if !exec.Executing(now) {
 		return false
 	}
 
-	return exec.StartTime.Add(task.ExecStrategy.MaxDuration).After(now)
+	return exec.startTime.Add(task.ExecStrategy.MaxDuration).After(now)
 }
 
 func (task *Task) Status() Status {
@@ -203,14 +206,14 @@ func (task *Task) Status() Status {
 	}
 
 	var now = time.Now()
-	if exc, ok := task.CurrentExecution(); ok {
+	if exec := task.CurrentExecution(); exec != nil {
 		switch {
-		case exc.WaitingStart(now) || exc.ReadyToStart(now):
+		case exec.WaitingStart(now) || exec.ReadyToStart(now):
 			status = StatusWaitingExec
-		case exc.Started(now):
-			status = StatusExecuting
-		case exc.Ended(now):
+		case exec.Ended(now):
 			status = StatusExecuteFinished
+		case exec.Executing(now):
+			status = StatusExecuting
 		default:
 			status = StatusUnknown
 		}
@@ -224,25 +227,29 @@ func (task *Task) Status() Status {
 
 // 包括等待时间
 func (task *Task) OnExecution() bool {
-	ec, ok := task.CurrentExecution()
-	if !ok {
+	ec := task.CurrentExecution()
+	if ec == nil {
 		return false
 	}
 	now := time.Now()
-	if ec.Started(now) && !ec.Ended(now) {
+	if ec.Executing(now) {
 		return true
 	}
 	return false
 }
 
-func (task *Task) CloseExec(result ExecResult) bool {
+func (task *Task) CloseExec(result ExecResult, execSeq int) bool {
 	if !task.OnExecution() {
 		return false
 	}
-	er, _ := task.CurrentExecution()
-	er.Result.ExecResultType = result.ExecResultType
-	er.EndTime = time.Now()
-	er.Result.ResultInfo = result.ResultInfo
+
+	exec := task.CurrentExecution()
+	if exec == nil || exec.execSeq != execSeq {
+		return false
+	}
+	exec.result.ExecResultType = result.ExecResultType
+	exec.endTime = time.Now()
+	exec.result.ResultInfo = result.ResultInfo
 	return true
 }
 
@@ -250,10 +257,10 @@ func (task *Task) UpdateExecStrategy(strategy ExecStrategy) {
 	task.ExecStrategy = strategy
 }
 
-func (task *Task) CancelExec(info string) bool {
+func (task *Task) CancelExec(info string, execSeq int) bool {
 	return task.CloseExec(ExecResult{
 		info, ExecResultTypeCancel,
-	})
+	}, execSeq)
 }
 
 func (task *Task) Close(closeType CloseType) {
@@ -276,51 +283,72 @@ func (task *Task) Closed() bool {
 func (task *Task) Profile() Profile {
 	var ex []Execution
 	for _, e := range task.Executions {
-		ex = append(ex, e)
+		ex = append(ex, *e)
 	}
 	return Profile{
-		TaskUnique: task.Unique,
+		TaskKey:    task.Key,
 		Status:     task.Status(),
 		Executions: ex,
 	}
 }
 
 type Execution struct {
-	ExecSeq         int        `bson:"exec_seq"`
-	ExpectStartTime time.Time  `bson:"expect_start_time"`
-	CreateTime      time.Time  `bson:"create_time"`
-	StartTime       time.Time  `bson:"start_time,omitempty"`
-	EndTime         time.Time  `bson:"end_time,omitempty"`
-	Result          ExecResult `bson:"result,omitempty"`
-	Session         Session
+	execSeq         int        `bson:"exec_seq"`
+	expectStartTime time.Time  `bson:"expect_start_time"`
+	createTime      time.Time  `bson:"create_time"`
+	startTime       time.Time  `bson:"start_time,omitempty"`
+	endTime         time.Time  `bson:"end_time,omitempty"`
+	result          ExecResult `bson:"result,omitempty"`
 }
 
-func (er Execution) ReadyToStart(t time.Time) bool {
-	if er.Started(t) || er.Ended(t) {
-		return false
+func NewExecution(seq int, expectStartTime time.Time) *Execution {
+	return &Execution{
+		execSeq:         seq,
+		expectStartTime: expectStartTime,
+		createTime:      time.Now(),
 	}
-	return er.ExpectStartTime.Before(t) || er.ExpectStartTime.Equal(t)
 }
 
-func (er Execution) WaitingStart(t time.Time) bool {
-	if er.Started(t) || er.Ended(t) {
-		return false
-	}
-	return er.ExpectStartTime.After(t)
+func (er *Execution) Seq() int {
+	return er.execSeq
 }
 
-func (er Execution) Started(t time.Time) bool {
-	if er.StartTime.IsZero() {
-		return false
-	}
-	return er.StartTime.Before(t)
+func (er *Execution) Start(t time.Time) {
+	er.startTime = t
 }
 
-func (er Execution) Ended(t time.Time) bool {
-	if er.EndTime.IsZero() {
+func (er *Execution) End(result ExecResult, t time.Time) {
+	er.result = result
+	er.endTime = t
+}
+
+
+func (er *Execution) ReadyToStart(t time.Time) bool {
+	if er.Executing(t) || er.Ended(t) {
 		return false
 	}
-	return er.EndTime.Before(t)
+	return er.expectStartTime.Before(t) || er.expectStartTime.Equal(t)
+}
+
+func (er *Execution) WaitingStart(t time.Time) bool {
+	if er.Executing(t) || er.Ended(t) {
+		return false
+	}
+	return er.expectStartTime.After(t)
+}
+
+func (er *Execution) Executing(t time.Time) bool {
+	if er.startTime.IsZero() || er.Ended(t) {
+		return false
+	}
+	return er.startTime.Before(t) || er.startTime.Equal(t)
+}
+
+func (er *Execution) Ended(t time.Time) bool {
+	if er.endTime.IsZero() {
+		return false
+	}
+	return er.endTime.Before(t) || er.startTime.Equal(t)
 }
 
 type ExecStrategy struct {
@@ -332,7 +360,7 @@ type ExecStrategy struct {
 }
 
 type Desc struct {
-	Unique   string
+	TaskKey  string
 	Strategy ExecStrategy
 }
 
@@ -352,7 +380,7 @@ type StatusProfile struct {
 }
 
 type Profile struct {
-	TaskUnique string
+	TaskKey    string
 	Status     Status
 	Executions []Execution
 }

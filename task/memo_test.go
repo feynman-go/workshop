@@ -9,7 +9,7 @@ import (
 
 func TestManagerBasic(t *testing.T) {
 	rep := NewMemoRepository()
-	sch := NewMemoScheduler()
+	sch := NewMemoScheduler(1 * time.Second)
 
 	g := &sync.WaitGroup{}
 	g.Add(1)
@@ -29,7 +29,7 @@ func TestManagerBasic(t *testing.T) {
 	}()
 
 	_, err := manager.ApplyNewTask(context.Background(), Desc{
-		Unique: "1",
+		TaskKey: "1",
 		Strategy: ExecStrategy{
 			ExpectStartTime: time.Now(),
 			MaxRetryTimes:   3,
@@ -41,4 +41,7 @@ func TestManagerBasic(t *testing.T) {
 	}
 
 	g.Wait()
+
+	time.Sleep(2 * time.Second)
 }
+
