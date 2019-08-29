@@ -9,16 +9,16 @@ import (
 )
 
 type Scheduler struct {
-	rw    sync.RWMutex
-	l     *list.List
-	pool *promise.Pool
+	rw      sync.RWMutex
+	l       *list.List
+	pool    *promise.Pool
 	newChan chan struct{}
 }
 
 func New(pool *promise.Pool) *Scheduler {
 	return &Scheduler{
-		l: list.New(),
-		pool: pool,
+		l:       list.New(),
+		pool:    pool,
 		newChan: make(chan struct{}),
 	}
 }
@@ -34,7 +34,7 @@ func (schedule *Scheduler) AddPlan(name string, startTime time.Time, endTime tim
 	defer schedule.rw.Unlock()
 
 	head := schedule.l.Front()
-	for ; head != nil ; head = head.Next() {
+	for ; head != nil; head = head.Next() {
 		in := head.Value.(*innerNode)
 		if node.expectStart.Before(in.expectStart) {
 			break
@@ -81,12 +81,11 @@ func (schedule *Scheduler) pop() {
 	schedule.l.Remove(head)
 }
 
-
 func (schedule *Scheduler) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		var (
 			headNode = schedule.peak()
-			tm *time.Timer
+			tm       *time.Timer
 		)
 		if headNode != nil {
 			now := time.Now()
@@ -100,10 +99,10 @@ func (schedule *Scheduler) Run(ctx context.Context) error {
 			tm = time.NewTimer(time.Second)
 		}
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return ctx.Err()
-		case <- schedule.newChan:
-		case cur := <- tm.C:
+		case <-schedule.newChan:
+		case cur := <-tm.C:
 			schedule.pop()
 			if headNode != nil && headNode.action != nil {
 				runCtx, _ := context.WithTimeout(ctx, headNode.endTime.Sub(cur))
@@ -116,7 +115,7 @@ func (schedule *Scheduler) Run(ctx context.Context) error {
 
 func (schedule *Scheduler) startAction(ctx context.Context, node *innerNode) {
 	if node.action != nil {
-		p := promise.NewPromise(schedule.pool, func(ctx context.Context, req promise.Request) promise.Result{
+		p := promise.NewPromise(schedule.pool, func(ctx context.Context, req promise.Request) promise.Result {
 			runCtx, _ := context.WithTimeout(ctx, node.endTime.Sub(time.Now()))
 			err := node.action(runCtx)
 			return promise.Result{
@@ -133,4 +132,3 @@ type innerNode struct {
 	expectStart time.Time
 	endTime     time.Time
 }
-

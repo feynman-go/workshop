@@ -28,4 +28,3 @@ type Scope interface {
 type Coordinator interface {
 	HandleTaskUpdate(ctx context.Context, scope Scope) (Step, error)
 }
-

@@ -10,7 +10,7 @@ import (
 
 func WrapWithBreakerStatus(status *breaker.Status, processFunc promise.ProcessFunc) promise.ProcessFunc {
 	return promise.ProcessFunc(func(ctx context.Context, req promise.Request) (res promise.Result) {
-		if  status.StatusCode() == breaker.StatusCodeAbnormal {
+		if status.StatusCode() == breaker.StatusCodeAbnormal {
 			return promise.Result{
 				Err: errors.New("breaker status abnormal"),
 			}
@@ -30,4 +30,3 @@ func WrapWithBreakerStatus(status *breaker.Status, processFunc promise.ProcessFu
 		return
 	})
 }
-

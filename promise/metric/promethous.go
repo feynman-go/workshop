@@ -9,8 +9,8 @@ import (
 )
 
 type PromMetric struct {
-	Name string
-	hv *prometheus.HistogramVec
+	Name  string
+	hv    *prometheus.HistogramVec
 	heads []string
 }
 
@@ -23,9 +23,9 @@ func NewPromMetric(name string, heads []string) *PromMetric {
 		Name: name,
 	}, labels)
 
-	return &PromMetric {
-		Name: name,
-		hv: vec,
+	return &PromMetric{
+		Name:  name,
+		hv:    vec,
 		heads: heads,
 	}
 }
@@ -33,10 +33,10 @@ func NewPromMetric(name string, heads []string) *PromMetric {
 func (metric *PromMetric) Wrap(processFunc promise.ProcessFunc) promise.ProcessFunc {
 	return promise.ProcessFunc(func(ctx context.Context, req promise.Request) promise.Result {
 		var (
-			start = time.Now()
-			err error
+			start  = time.Now()
+			err    error
 			labels = prometheus.Labels{}
-			res promise.Result
+			res    promise.Result
 		)
 		defer func() {
 			rc := recover()

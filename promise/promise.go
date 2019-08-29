@@ -10,7 +10,7 @@ type Request struct {
 	from      *processInstance
 	partition bool
 	eventKey  int
-	head textproto.MIMEHeader
+	head      textproto.MIMEHeader
 }
 
 func (r Request) WithHead(key, value string) Request {
@@ -44,13 +44,13 @@ func (r Request) RangeHead(iter func(k, v string) bool) {
 }
 
 type Profile struct {
-	req *Request
-	Wait func(ctx context.Context, req Request) error
+	req       *Request
+	Wait      func(ctx context.Context, req Request) error
 	Process   ProcessFunc
 	MiddleEnd bool
 }
 
-func (p Profile) SetPartition( partition bool) {
+func (p Profile) SetPartition(partition bool) {
 	p.req.partition = partition
 }
 
@@ -233,7 +233,7 @@ func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 
 func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error {
 	req := Request{
-		from:    lastProcess,
+		from: lastProcess,
 	}
 
 	profile := Profile{req: &req, Process: p.process}

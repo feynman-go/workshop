@@ -19,4 +19,3 @@ type Repository interface {
 
 	GetTaskSummary(ctx context.Context) (*Summery, error)
 }
-

@@ -19,30 +19,27 @@ func Run(ctx context.Context, exitWait time.Duration, runner ...func(ctx context
 	}
 
 	select {
-	case <- ctx.Done():
-		select {
-
-		}
+	case <-ctx.Done():
+		select {}
 	}
 }
-
 
 type status int
 
 const (
-	statusInit = 0
+	statusInit    = 0
 	statusRunning = 1
-	statusStoped = 2
-	statusExit = 3
+	statusStoped  = 2
+	statusExit    = 3
 )
 
 type Runner struct {
-	rw sync.RWMutex
-	prob *Prob
+	rw     sync.RWMutex
+	prob   *Prob
 	expect status
 	actual status
-	sub map[*Runner]bool
-	depOn map[*Runner]bool
+	sub    map[*Runner]bool
+	depOn  map[*Runner]bool
 	runner func(ctx context.Context) error
 }
 
@@ -78,12 +75,9 @@ func (p *Runner) ActualStatus() {
 
 }
 
-
 type group struct {
 	coupled bool
-
 }
 
 type Prob struct {
-
 }

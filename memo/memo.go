@@ -20,7 +20,7 @@ func NewMemoStore(liveDuration time.Duration, liveDelta time.Duration) *MemoStor
 		pool: &sync.Pool{
 			New: func() interface{} {
 				return &memoData{
-					liveDelta: liveDelta,
+					liveDelta:    liveDelta,
 					liveDuration: liveDuration,
 				}
 			},
@@ -40,8 +40,8 @@ func (store *MemoStore) Run(ctx context.Context) error {
 		}
 		tm := time.NewTimer(10 * time.Second)
 		select {
-		case <- tm.C:
-		case <- ctx.Done():
+		case <-tm.C:
+		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
@@ -128,8 +128,7 @@ func (store *MemoStore) Load(id interface{}, deft interface{}) (interface{}, boo
 	return d.GetValue(), loaded
 }
 
-
-func (store *MemoStore) Live(id interface{}) (time.Time) {
+func (store *MemoStore) Live(id interface{}) time.Time {
 	md := store.getData(id)
 	if md == nil {
 		return time.Time{}
@@ -149,7 +148,7 @@ func (store *MemoStore) Range(r func(id, v interface{}) bool) {
 
 type memoData struct {
 	liveDuration time.Duration
-	liveDelta time.Duration
+	liveDelta    time.Duration
 	value        interface{}
 	rw           sync.RWMutex
 	lastUpdate   time.Time
@@ -188,7 +187,6 @@ func (data *memoData) keepLive() {
 	data.liveUntil = n.Add(data.liveDuration - delta)
 	return
 }
-
 
 func (data *memoData) Set(value interface{}) {
 	var n = time.Now()

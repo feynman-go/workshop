@@ -10,7 +10,7 @@ type Middle struct {
 	Name        string
 	Wrapper     func(process Profile) Profile
 	Inheritable bool
-	Labels map[string]string
+	Labels      map[string]string
 }
 
 func (mid Middle) WithInheritable(inheritable bool) Middle {
@@ -23,7 +23,7 @@ func (mid Middle) WithName(name string) Middle {
 	return mid
 }
 
-func WrapProcess(name string, wrapper func(ProcessFunc) ProcessFunc ) Middle {
+func WrapProcess(name string, wrapper func(ProcessFunc) ProcessFunc) Middle {
 	return Middle{
 		Name: name,
 		Wrapper: func(request Profile) Profile {
@@ -36,7 +36,7 @@ func WrapProcess(name string, wrapper func(ProcessFunc) ProcessFunc ) Middle {
 func WrapTimeout(name string, timeout time.Duration) Middle {
 	return WrapProcess(name, func(p ProcessFunc) ProcessFunc {
 		return func(ctx context.Context, req Request) Result {
-			ctx , _ = context.WithTimeout(ctx, timeout)
+			ctx, _ = context.WithTimeout(ctx, timeout)
 			return p(ctx, req)
 		}
 	})

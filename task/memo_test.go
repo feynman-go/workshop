@@ -13,11 +13,11 @@ func TestManagerBasic(t *testing.T) {
 
 	g := &sync.WaitGroup{}
 	g.Add(1)
-	manager := NewManager(rep, sch, FuncExecutor(func(cb *Context) error {
+	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
 		g.Done()
 		return cb.Callback(cb, ExecResult{
 			ExecResultType: ExecResultTypeSuccess,
-			ResultInfo: "",
+			ResultInfo:     "",
 		})
 	}))
 
@@ -32,7 +32,7 @@ func TestManagerBasic(t *testing.T) {
 		Unique: "1",
 		Strategy: ExecStrategy{
 			ExpectStartTime: time.Now(),
-			MaxRetryTimes: 3,
+			MaxRetryTimes:   3,
 		},
 	})
 

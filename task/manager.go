@@ -11,11 +11,12 @@ import (
 )
 
 type Executor interface {
-	StartExecution(cb *Context) error
+	StartExecution(cb Context) error
 }
 
-type FuncExecutor func(cb *Context) error
-func (fe FuncExecutor) StartExecution(cb *Context) error {
+type FuncExecutor func(cb Context) error
+
+func (fe FuncExecutor) StartExecution(cb Context) error {
 	return fe(cb)
 }
 
@@ -26,15 +27,15 @@ type Context struct {
 	execution Execution
 }
 
-func (cb *Context) Execution() Execution {
+func (cb Context) Execution() Execution {
 	return cb.execution
 }
 
-func (cb *Context) TaskKey() string {
+func (cb Context) TaskKey() string {
 	return cb.unique
 }
 
-func (cb *Context) Callback(ctx context.Context, res ExecResult) error {
+func (cb Context) Callback(ctx context.Context, res ExecResult) error {
 	err := cb.manager.TaskCallback(ctx, cb.unique, cb.execution.Session, res)
 	return err
 }
@@ -120,7 +121,8 @@ func (svc *Manager) handleStartTimeOn(ctx context.Context, task *Task) (err erro
 
 func (svc *Manager) startExec(ctx context.Context, unique string, execution Execution) {
 	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
-		err := svc.executor.StartExecution(&Context{
+		err := svc.executor.StartExecution(Context{
+			Context:   ctx,
 			manager:   svc,
 			unique:    unique,
 			execution: execution,

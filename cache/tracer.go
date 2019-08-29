@@ -7,18 +7,18 @@ type Tracers interface {
 }
 
 const (
-	ReadFromCache ReadProcessType = 1
-	ReadFromStore ReadProcessType = 1
+	ReadFromCache     ReadProcessType = 1
+	ReadFromStore     ReadProcessType = 1
 	ReadFromDowngrade ReadProcessType = 1
 )
 
 type ReadProcessType int
 
 type Span struct {
-	Hit bool
+	Hit             bool
 	ReadProcessType ReadProcessType
-	CacheRead time.Duration
-	StoreRead time.Duration
-	DowngradeRead time.Duration
-	WaitDuration time.Duration
+	CacheRead       time.Duration
+	StoreRead       time.Duration
+	DowngradeRead   time.Duration
+	WaitDuration    time.Duration
 }

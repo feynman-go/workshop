@@ -8,7 +8,7 @@ import (
 )
 
 type OpenTracer struct {
-	Name string
+	Name       string
 	RecordHead bool
 }
 
@@ -28,7 +28,7 @@ func (tracer *OpenTracer) Wrap(processFunc promise.ProcessFunc) promise.ProcessF
 			)
 		}
 		if tracer.RecordHead {
-			req.RangeHead(func(k ,v string) bool {
+			req.RangeHead(func(k, v string) bool {
 				sp.LogFields(
 					log.String(k, v),
 				)

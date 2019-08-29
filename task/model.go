@@ -11,24 +11,24 @@ var ErrOverMaxRetry = errors.New("over max retry")
 var ErrExecuting = errors.New("is executing")
 
 const (
-	StatusCreated          Status = 0
-	StatusInit             Status = 1 << 10
-	StatusWaitingExec      Status = 2 << 10
-	StatusExecuting        Status = 3 << 10
-	StatusExecuteFinished  Status = 4 << 10
-	StatusClosed           Status = 5 << 10
-	StatusUnknown          Status = 128 << 10
+	StatusCreated         Status = 0
+	StatusInit            Status = 1 << 10
+	StatusWaitingExec     Status = 2 << 10
+	StatusExecuting       Status = 3 << 10
+	StatusExecuteFinished Status = 4 << 10
+	StatusClosed          Status = 5 << 10
+	StatusUnknown         Status = 128 << 10
 )
 
 type CloseType int
 
 const (
-	CloseTypeSuccess CloseType = 0
+	CloseTypeSuccess     CloseType = 0
 	CloseTypeNoMoreRetry CloseType = 1
-	CloseTypeCanceled CloseType = 2
-	CloseTypeNotInited CloseType = 3
-	CloseTypeUnexpect CloseType = 4
-	CloseTypeNoExecutor CloseType = 2
+	CloseTypeCanceled    CloseType = 2
+	CloseTypeNotInited   CloseType = 3
+	CloseTypeUnexpect    CloseType = 4
+	CloseTypeNoExecutor  CloseType = 2
 )
 
 type Status int
@@ -54,10 +54,10 @@ func (status Status) String() string {
 
 const (
 	ExecResultTypeUnfinished ResultType = 0
-	ExecResultTypeCancel ResultType = 1
-	ExecResultTypeErr ResultType = 2
-	ExecResultTypeTimeOut ResultType = 3
-	ExecResultTypeSuccess ResultType = 4
+	ExecResultTypeCancel     ResultType = 1
+	ExecResultTypeErr        ResultType = 2
+	ExecResultTypeTimeOut    ResultType = 3
+	ExecResultTypeSuccess    ResultType = 4
 )
 
 type ResultType int
@@ -72,19 +72,19 @@ type Task struct {
 	HandlerID       int64         `bson:"handler_id"`
 	HandlerSequence int64         `bson:"handler_seq"`
 	//Status          Status        `bson:"status"`
-	Executions      []Execution   `bson:"execs"`
-	Session         Session       `bson:"session"`
-	CloseType       CloseType     `bson:"closeType"`
+	Executions []Execution `bson:"execs"`
+	Session    Session     `bson:"session"`
+	CloseType  CloseType   `bson:"closeType"`
 }
 
 type Session struct {
-	SessionID int64
+	SessionID      int64
 	SessionExpires time.Time
 }
 
 func TaskFromDesc(desc Desc) *Task {
 	t := &Task{
-		Unique: desc.Unique,
+		Unique:     desc.Unique,
 		CreateTime: time.Now(),
 	}
 	t.UpdateExecStrategy(desc.Strategy)
@@ -123,7 +123,7 @@ func (task *Task) ReadyNewExec(force bool, session Session) (err error) {
 	} else {
 		maxWait := int32((task.ExecStrategy.MaxRetryWait) / time.Millisecond)
 		minWait := int32((task.ExecStrategy.MinRetryWait) / time.Millisecond)
-		waitTime := time.Duration(minWait + rand.Int31n(maxWait - minWait)) * time.Millisecond
+		waitTime := time.Duration(minWait+rand.Int31n(maxWait-minWait)) * time.Millisecond
 		if waitTime >= 0 {
 			er.ExpectStartTime = now.Add(waitTime)
 		}
@@ -156,11 +156,11 @@ func (task *Task) StartCurrentExec(now time.Time) (Execution, bool) {
 	return er, true
 }
 
-func (task *Task) CurrentExecution() (Execution, bool){
+func (task *Task) CurrentExecution() (Execution, bool) {
 	if len(task.Executions) == 0 {
 		return Execution{}, false
 	}
-	return task.Executions[len(task.Executions) - 1], true
+	return task.Executions[len(task.Executions)-1], true
 }
 
 func (task *Task) WaitOvertime(now time.Time) bool {
@@ -182,7 +182,6 @@ func (task *Task) ReadyExec(now time.Time) bool {
 	return false
 }
 
-
 func (task *Task) ExecOvertime(now time.Time) bool {
 	exec, ok := task.CurrentExecution()
 	if !ok {
@@ -195,7 +194,6 @@ func (task *Task) ExecOvertime(now time.Time) bool {
 
 	return exec.StartTime.Add(task.ExecStrategy.MaxDuration).After(now)
 }
-
 
 func (task *Task) Status() Status {
 	var status Status
@@ -224,7 +222,6 @@ func (task *Task) Status() Status {
 	return status
 }
 
-
 // 包括等待时间
 func (task *Task) OnExecution() bool {
 	ec, ok := task.CurrentExecution()
@@ -237,7 +234,6 @@ func (task *Task) OnExecution() bool {
 	}
 	return false
 }
-
 
 func (task *Task) CloseExec(result ExecResult) bool {
 	if !task.OnExecution() {
@@ -256,11 +252,11 @@ func (task *Task) UpdateExecStrategy(strategy ExecStrategy) {
 
 func (task *Task) CancelExec(info string) bool {
 	return task.CloseExec(ExecResult{
-		info,ExecResultTypeCancel,
+		info, ExecResultTypeCancel,
 	})
 }
 
-func (task *Task) Close(closeType CloseType)  {
+func (task *Task) Close(closeType CloseType) {
 	if task.Closed() {
 		return
 	}
@@ -282,21 +278,21 @@ func (task *Task) Profile() Profile {
 	for _, e := range task.Executions {
 		ex = append(ex, e)
 	}
-	return Profile {
+	return Profile{
 		TaskUnique: task.Unique,
-		Status: task.Status(),
+		Status:     task.Status(),
 		Executions: ex,
 	}
 }
 
 type Execution struct {
-	ExecSeq int `bson:"exec_seq"`
-	ExpectStartTime time.Time `bson:"expect_start_time"`
-	CreateTime time.Time `bson:"create_time"`
-	StartTime time.Time `bson:"start_time,omitempty"`
-	EndTime time.Time `bson:"end_time,omitempty"`
-	Result ExecResult `bson:"result,omitempty"`
-	Session Session
+	ExecSeq         int        `bson:"exec_seq"`
+	ExpectStartTime time.Time  `bson:"expect_start_time"`
+	CreateTime      time.Time  `bson:"create_time"`
+	StartTime       time.Time  `bson:"start_time,omitempty"`
+	EndTime         time.Time  `bson:"end_time,omitempty"`
+	Result          ExecResult `bson:"result,omitempty"`
+	Session         Session
 }
 
 func (er Execution) ReadyToStart(t time.Time) bool {
@@ -312,7 +308,6 @@ func (er Execution) WaitingStart(t time.Time) bool {
 	}
 	return er.ExpectStartTime.After(t)
 }
-
 
 func (er Execution) Started(t time.Time) bool {
 	if er.StartTime.IsZero() {
@@ -330,19 +325,19 @@ func (er Execution) Ended(t time.Time) bool {
 
 type ExecStrategy struct {
 	ExpectStartTime time.Time
-	MaxDuration time.Duration
-	MaxRetryTimes int
-	MaxRetryWait time.Duration
-	MinRetryWait time.Duration
+	MaxDuration     time.Duration
+	MaxRetryTimes   int
+	MaxRetryWait    time.Duration
+	MinRetryWait    time.Duration
 }
 
 type Desc struct {
-	Unique string
+	Unique   string
 	Strategy ExecStrategy
 }
 
 type ExecResult struct {
-	ResultInfo string
+	ResultInfo     string
 	ExecResultType ResultType
 }
 
@@ -358,7 +353,6 @@ type StatusProfile struct {
 
 type Profile struct {
 	TaskUnique string
-	Status Status
+	Status     Status
 	Executions []Execution
 }
-
