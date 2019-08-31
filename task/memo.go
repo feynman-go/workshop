@@ -38,7 +38,8 @@ func (scheduler *MemoScheduler) EnableTaskClock(ctx context.Context, taskKey str
 		awakenDuration: scheduler.awakenDuration,
 	}
 	scheduler.m.Store(taskKey, pair)
-	time.AfterFunc(time.Now().Sub(expectStartTime), func() {
+
+	time.AfterFunc(expectStartTime.Sub(time.Now()), func() {
 		scheduler.pairChan <- pair
 	})
 	return nil
@@ -198,6 +199,10 @@ func (ms *MemoRepository) OccupyTask(ctx context.Context, taskKey string, sessio
 func (ms *MemoRepository) ReleaseTaskSession(ctx context.Context, taskKey string, sessionID int64) error {
 	v, ok := ms.store.Get(taskKey)
 	if !ok {
+		return nil
+	}
+
+	if v == nil {
 		return nil
 	}
 

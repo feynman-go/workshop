@@ -124,9 +124,12 @@ func (task *Task) ReadyNewExec(forceClose bool) (err error) {
 	} else {
 		maxWait := int32((task.ExecStrategy.MaxRetryWait) / time.Millisecond)
 		minWait := int32((task.ExecStrategy.MinRetryWait) / time.Millisecond)
-		waitTime := time.Duration(minWait+rand.Int31n(maxWait-minWait)) * time.Millisecond
-		if waitTime >= 0 {
-			expectStartTime = now.Add(waitTime)
+		delta := maxWait-minWait
+		if delta != 0 {
+			waitTime := time.Duration(minWait+rand.Int31n(delta)) * time.Millisecond
+			if waitTime >= 0 {
+				expectStartTime = now.Add(waitTime)
+			}
 		}
 	}
 	if expectStartTime.IsZero() {
