@@ -3,8 +3,6 @@ package task
 import (
 	"context"
 	"errors"
-	"github.com/feynman-go/workshop/memo"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -48,20 +46,16 @@ func NewMemoScheduler(awakenDuration time.Duration) *MemoScheduler {
 	}
 }
 
-func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, taskKey string, info Info, schedule Schedule) error {
+func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, task Task) error {
 
 	scheduler.rw.Lock()
-	in, ext := scheduler.tasks[taskKey]
+	in, ext := scheduler.tasks[task.Key]
 	if !ext {
 		in = &inner{}
-		scheduler.tasks[taskKey] = in
+		scheduler.tasks[task.Key] = in
 	}
-	in.task = Task{
-		Key: taskKey,
-		Schedule: schedule,
-		Info: info,
-	}
-	awakeTime := in.task.Schedule.ExpectTime
+	in.task = task.Copy()
+	awakeTime := in.task.Schedule.AwakenTime
 	scheduler.rw.Unlock()
 
 	scheduler.schedule(in, awakeTime)
@@ -73,7 +67,7 @@ func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time) {
 	defer in.rw.Unlock()
 
 	taskKey := in.task.Key
-	laterAwakeTime := in.task.Schedule.ExpectTime.Add(scheduler.awakenDuration)
+	laterAwakeTime := in.task.Schedule.AwakenTime.Add(scheduler.awakenDuration)
 
 	timer := time.AfterFunc(awakeTime.Sub(time.Now()), func() {
 		scheduler.rw.RLock()
@@ -145,7 +139,21 @@ func (scheduler *MemoScheduler) TaskSummery(ctx context.Context) (*Summery, erro
 	}, nil
 }
 
-var _ ExecutionRepository = (*MemoExecRepository)(nil)
+func (scheduler *MemoScheduler) NewExecID(ctx context.Context, taskKey string) (seq int32, err error) {
+	scheduler.rw.RLock()
+	in, ext := scheduler.tasks[taskKey]
+	scheduler.rw.RUnlock()
+	if !ext {
+		return 0, errors.New("task not exists")
+	}
+	t := in.GetTask()
+	if t.Execution != nil {
+		return t.Execution.MainSeq + 1, nil
+	}
+	return 1, nil
+}
+
+/*var _ ExecutionRepository = (*MemoExecRepository)(nil)
 
 type MemoExecRepository struct {
 	store       *memo.MemoStore
@@ -187,7 +195,7 @@ func (ms *MemoExecRepository) Run(ctx context.Context) error {
 	defer cancel()
 
 	return ms.store.Run(runCtx)
-}
+}*/
 
 var taskListPool = &sync.Pool{
 	New: func() interface{} {

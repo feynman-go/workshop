@@ -10,13 +10,9 @@ var ErrOverMaxRetry = errors.New("over max retry")
 var ErrExecuting = errors.New("is executing")
 
 const (
-	StatusCreated         StatusCode = 0
-	StatusInit            StatusCode = 1 << 10
-	StatusWaitingExec     StatusCode = 2 << 10
-	StatusExecuting       StatusCode = 3 << 10
-	StatusExecuteFinished StatusCode = 4 << 10
-	StatusClosed          StatusCode = 5 << 10
-	StatusUnknown         StatusCode = 128 << 10
+	StatusWaitingExec     StatusCode = 2
+	StatusExecuting       StatusCode = 3
+	StatusExecuteFinished StatusCode = 4
 )
 
 type CloseType int
@@ -34,18 +30,12 @@ type StatusCode int
 
 func (status StatusCode) String() string {
 	switch status {
-	case StatusCreated:
-		return "created"
-	case StatusInit:
-		return "init"
 	case StatusWaitingExec:
 		return "waiting exec"
 	case StatusExecuting:
 		return "executing"
 	case StatusExecuteFinished:
 		return "exec finished"
-	case StatusClosed:
-		return "closed"
 	default:
 		return "unknown"
 	}
@@ -62,34 +52,63 @@ const (
 type ResultType int
 
 type Schedule struct {
-	AcceptTime time.Time
-	ExpectTime time.Time
-	Priority int32
+	AwakenTime time.Time
+	Priority   int32
 }
 
 type Task struct {
-	Key             string        `bson:"_id"`
-	Schedule Schedule `bson:"inner"`
+	Key string        `bson:"_id"`
+	Schedule Schedule `bson:"schedule"`
 	Info Info `bson:"info"`
+	Execution *Execution `bson:"execution"`
 }
 
+func (task *Task) NewExec(execSeq int32) {
+	task.Execution = &Execution{
+		MainSeq: execSeq,
+		Config: task.Info.ExecConfig,
+	}
+}
+
+func (task Task) Copy() Task {
+	ret := task
+	if task.Execution != nil {
+		ret.Execution = new(Execution)
+		*ret.Execution = *task.Execution
+	}
+	return ret
+}
+
+
+
 type Info struct {
-	ExecutionID     int64         `bson:"execID,omitempty"`
-	Tags            []string      `bson:"tags"`
-	Executing       bool          `bson:"execution"`
-	ExecDes         ExecDesc      `bson:"execDesc"`
+	Tags       []string   `bson:"tags"`
+	ExecConfig ExecConfig `bson:"execDesc"`
+	CreateTime time.Time `bson:"createTime"`
 }
 
 type Execution struct {
-	ID int64 `bson:"expect_start_time"`
-	TaskID string `bson:"taskID"`
-	ExpectStartTime time.Time  `bson:"expect_start_time"`
-	CreateTime      time.Time  `bson:"create_time"`
-	StartTime       time.Time  `bson:"start_time,omitempty"`
-	EndTime         time.Time  `bson:"end_time,omitempty"`
-	MaxExecDuration time.Duration  `bson:"maxExecDur,omitempty"`
-	Result          ExecResult `bson:"result,omitempty"`
+	MainSeq         int32         `bson:"mainSeq"`
+	Config          ExecConfig    `bson:"config"`
+	CreateTime      time.Time     `bson:"createTime,omitempty"`
+	StartTime       time.Time     `bson:"startTime,omitempty"`
+	EndTime         time.Time     `bson:"endTime,omitempty"`
+	Result          ExecResult    `bson:"result,omitempty"`
 }
+
+func (er *Execution) Seq(t time.Time) int64 {
+	switch  {
+	case er.WaitingStart(t):
+		return (int64(er.MainSeq) << 32) | int64(StatusWaitingExec)
+	case er.Executing(t):
+		return (int64(er.MainSeq) << 32) | int64(StatusExecuting)
+	case er.Ended(t):
+		return (int64(er.MainSeq) << 32) | int64(StatusExecuteFinished)
+	default:
+		return int64(er.MainSeq) << 32
+	}
+}
+
 
 func (er *Execution) Start(t time.Time) {
 	er.StartTime = t
@@ -100,19 +119,18 @@ func (er *Execution) End(result ExecResult, t time.Time) {
 	er.EndTime = t
 }
 
-
 func (er *Execution) ReadyToStart(t time.Time) bool {
 	if er.Executing(t) || er.Ended(t) {
 		return false
 	}
-	return er.ExpectStartTime.Before(t) || er.ExpectStartTime.Equal(t)
+	return er.Config.ExpectStartTime.Before(t) || er.Config.ExpectStartTime.Equal(t)
 }
 
 func (er *Execution) WaitingStart(t time.Time) bool {
 	if er.Executing(t) || er.Ended(t) {
 		return false
 	}
-	return er.ExpectStartTime.After(t)
+	return er.Config.ExpectStartTime.After(t)
 }
 
 func (er *Execution) Executing(t time.Time) bool {
@@ -137,27 +155,33 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 	if !er.Executing(t) {
 		return false
 	}
-	lastTime := er.ExpectStartTime.Add(er.MaxExecDuration)
+	lastTime := er.Config.ExpectStartTime.Add(er.Config.MaxExecDuration)
 	return lastTime.Before(t)
 }
 
 
 type Desc struct {
-	TaskKey         string
-	ExecDesc        ExecDesc
-	Tags            []string
+	TaskKey  string
+	ExecDesc ExecConfig
+	Tags     []string
 }
 
 type ExecResult struct {
-	ResultInfo string    `bson:"resultInfo"`
-	NextExec   ExecDesc `bson:"next,omitempty"`
+	ResultInfo string     `bson:"resultInfo"`
+	NextExec   ExecConfig `bson:"next,omitempty"`
 }
 
-type ExecDesc struct {
+type ExecConfig struct {
 	ExpectStartTime time.Time     `bson:"expectRetryTime"`
 	MaxExecDuration time.Duration `bson:"maxExecDuration"`
 	RemainExecCount int32         `bson:"remainExec"`
 	Priority        int32         `bson:"priority"`
+}
+
+type ExecSummery struct {
+	CurrentIndex int32
+	ExpectExecTime time.Time
+	MaxDuration time.Duration
 }
 
 type Summery struct {

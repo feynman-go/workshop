@@ -9,12 +9,11 @@ import (
 )
 
 func TestManagerBasic(t *testing.T) {
-	rep := NewMemoRepository()
 	sch := NewMemoScheduler(10 * time.Second)
 
 	g := &sync.WaitGroup{}
 	g.Add(1)
-	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
+	manager := NewManager(sch, FuncExecutor(func(cb Context) error {
 		g.Done()
 		return cb.Callback(cb, ExecResult{
 			ResultInfo:     "",
@@ -30,7 +29,7 @@ func TestManagerBasic(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		ExecDesc:ExecDesc{
+		ExecDesc: ExecConfig{
 			ExpectStartTime: time.Now(),
 			RemainExecCount:    3,
 		},
@@ -61,11 +60,10 @@ func TestManagerBasic(t *testing.T) {
 }
 
 func TestManagerExpectTime(t *testing.T) {
-	rep := NewMemoRepository()
 	sch := NewMemoScheduler(1 * time.Second)
 
 	var flag int32
-	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
+	manager := NewManager(sch, FuncExecutor(func(cb Context) error {
 		atomic.StoreInt32(&flag, 1)
 		defer atomic.StoreInt32(&flag, 2)
 		time.Sleep(1 * time.Second)
@@ -83,7 +81,7 @@ func TestManagerExpectTime(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		ExecDesc:ExecDesc{
+		ExecDesc: ExecConfig{
 			ExpectStartTime: time.Now().Add(time.Second),
 			RemainExecCount:    3,
 		},
@@ -124,20 +122,19 @@ func TestManagerExpectTime(t *testing.T) {
 }
 
 func TestTaskRetry(t *testing.T) {
-	rep := NewMemoRepository()
 	sch := NewMemoScheduler(1 * time.Second)
 
 	var count int32
 
-	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
+	manager := NewManager(sch, FuncExecutor(func(cb Context) error {
 		n := atomic.AddInt32(&count, 1)
-		ed := ExecDesc {
+		ed := ExecConfig{
 			ExpectStartTime: time.Now().Add(time.Second),
 			MaxExecDuration: time.Second,
 			RemainExecCount: 1,
 		}
 
-		if n > 3 {
+		if n >= 3 {
 			ed.RemainExecCount = 0
 		}
 		return cb.Callback(cb, ExecResult{
@@ -155,7 +152,7 @@ func TestTaskRetry(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		ExecDesc:ExecDesc{
+		ExecDesc: ExecConfig{
 			ExpectStartTime: time.Now(),
 			RemainExecCount:    10,
 		},
@@ -167,8 +164,8 @@ func TestTaskRetry(t *testing.T) {
 
 	time.Sleep(4 * time.Second)
 
-	if atomic.LoadInt32(&count) != 3 {
-		t.Fatal("retry count expect 3")
+	if ct := atomic.LoadInt32(&count); ct != 3 {
+		t.Fatal("retry count expect 3， but", ct)
 	}
 
 	task, err := sch.ReadTask(context.Background(), "1")
