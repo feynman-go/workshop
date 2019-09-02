@@ -30,8 +30,10 @@ func TestManagerBasic(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		ExpectStartTime: time.Now(),
-		MaxExecCount:   3,
+		ExecDesc:ExecDesc{
+			ExpectStartTime: time.Now(),
+			RemainExecCount:    3,
+		},
 	})
 
 	if err != nil {
@@ -81,8 +83,10 @@ func TestManagerExpectTime(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		ExpectStartTime: time.Now().Add(time.Second),
-		MaxExecCount:   3,
+		ExecDesc:ExecDesc{
+			ExpectStartTime: time.Now().Add(time.Second),
+			RemainExecCount:    3,
+		},
 	})
 
 	if err != nil {
@@ -127,17 +131,18 @@ func TestTaskRetry(t *testing.T) {
 
 	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
 		n := atomic.AddInt32(&count, 1)
-		ed := &ExecDesc {
-			ExpectRetryTime: time.Now().Add(time.Second),
+		ed := ExecDesc {
+			ExpectStartTime: time.Now().Add(time.Second),
 			MaxExecDuration: time.Second,
+			RemainExecCount: 1,
 		}
 
 		if n > 3 {
-			ed = nil
+			ed.RemainExecCount = 0
 		}
 		return cb.Callback(cb, ExecResult{
-			ResultInfo:     "",
-			RetryInfo:  ed,
+			ResultInfo: "",
+			NextExec:   ed,
 		})
 	}), 2 * time.Second)
 
@@ -150,8 +155,10 @@ func TestTaskRetry(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		ExpectStartTime: time.Now(),
-		MaxExecCount:   10,
+		ExecDesc:ExecDesc{
+			ExpectStartTime: time.Now(),
+			RemainExecCount:    10,
+		},
 	})
 
 	if err != nil {

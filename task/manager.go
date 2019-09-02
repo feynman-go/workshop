@@ -76,15 +76,17 @@ func NewManager(repository ExecutionRepository, scheduler Scheduler, executor Ex
 }
 
 func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) error {
+	if desc.ExecDesc.RemainExecCount <= 0 {
+		desc.ExecDesc.RemainExecCount = 1
+	}
 	now := time.Now()
 	err := svc.scheduler.ScheduleTask(ctx, desc.TaskKey, Info{
-		Tags: desc.Tags,
-		MaxExecCount: desc.MaxExecCount,
-		MaxExecDuration: desc.MaxExecDuration,
+		Tags:            desc.Tags,
+		ExecDes:         desc.ExecDesc,
 	}, Schedule{
 		AcceptTime: now,
-		ExpectTime: desc.ExpectStartTime,
-		Priority: desc.Priority,
+		ExpectTime: desc.ExecDesc.ExpectStartTime,
+		Priority: desc.ExecDesc.Priority,
 	})
 
 	if err != nil {
@@ -140,23 +142,24 @@ func (svc *Manager) newTaskExecution(ctx context.Context, task *Task, execDesc E
 
 	maxDuration := execDesc.MaxExecDuration
 	if maxDuration == 0 {
-		maxDuration = task.Info.MaxExecDuration
+		maxDuration = svc.maxRedundancy
 	}
 
-	if execDesc.ExpectRetryTime.IsZero() {
-		execDesc.ExpectRetryTime = time.Now()
+	if execDesc.ExpectStartTime.IsZero() {
+		execDesc.ExpectStartTime = time.Now()
 	}
 
 	var now = time.Now()
 
-	task.Schedule.ExpectTime = execDesc.ExpectRetryTime
+	task.Schedule.ExpectTime = execDesc.ExpectStartTime
 	task.Schedule.AcceptTime = now
 	task.Info.ExecutionID = id
+	task.Info.ExecDes = execDesc
 
 	exec := &Execution{
 		ID: id,
 		TaskID: task.Key,
-		ExpectStartTime: execDesc.ExpectRetryTime,
+		ExpectStartTime: execDesc.ExpectStartTime,
 		CreateTime: time.Now(),
 		MaxExecDuration: maxDuration,
 	}
@@ -168,13 +171,6 @@ func (svc *Manager) newTaskExecution(ctx context.Context, task *Task, execDesc E
 
 	err = svc.scheduler.ScheduleTask(ctx, task.Key, task.Info, task.Schedule)
 	return exec, err
-}
-
-func (svc *Manager) execCanRetry(task *Task, exec *Execution) bool {
-	if task.Info.MaxExecCount <= task.Info.ExecCount {
-		return false
-	}
-	return exec.CanRetry()
 }
 
 func (svc *Manager) getRandomRedundancy() time.Duration {
@@ -198,9 +194,7 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	var t = time.Now()
 
 	if task.Info.ExecutionID == 0 {
-		exec, err = svc.newTaskExecution(ctx, task, ExecDesc{
-			ExpectRetryTime: task.Schedule.ExpectTime,
-		})
+		exec, err = svc.newTaskExecution(ctx, task, task.Info.ExecDes)
 	} else {
 		exec, err = svc.execRep.FindExecution(ctx, task.Key, task.Info.ExecutionID)
 	}
@@ -215,13 +209,11 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	case exec.WaitingStart(t):
 	case exec.Executing(t):
 		if exec.OverExecTime(t) {
-			_, err = svc.newTaskExecution(ctx, task, ExecDesc{
-				ExpectRetryTime: svc.getExecutingAwakeTime(exec),
-			})
+			_, err = svc.newTaskExecution(ctx, task, task.Info.ExecDes)
 		}
 	case exec.Ended(t):
-		if svc.execCanRetry(task, exec) {
-			_, err = svc.newTaskExecution(ctx, task, *exec.Result.RetryInfo)
+		if exec.CanRetry() {
+			_, err = svc.newTaskExecution(ctx, task, exec.Result.NextExec)
 		} else {
 			svc.closeTask(ctx, task)
 		}
@@ -237,7 +229,6 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 func (svc *Manager) doExec(ctx context.Context, task *Task, execution *Execution) {
 	execution.Start(time.Now())
 	task.Schedule.ExpectTime = svc.getExecutingAwakeTime(execution)
-	task.Info.MaxExecCount ++
 	task.Info.Executing = true
 
 	err := svc.scheduler.ScheduleTask(ctx, task.Key, task.Info, task.Schedule)

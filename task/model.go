@@ -74,13 +74,10 @@ type Task struct {
 }
 
 type Info struct {
-
-	ExecutionID int64 `bson:"execID,omitempty"`
-	Tags        []string `bson:"tags"`
-	Executing   bool `bson:"execution"`
-	MaxExecCount int32 `bson:"maxExec"`
-	ExecCount 	int32 `bson:"execCount,omitempty"`
-	MaxExecDuration time.Duration `bson:"maxExecDur"`
+	ExecutionID     int64         `bson:"execID,omitempty"`
+	Tags            []string      `bson:"tags"`
+	Executing       bool          `bson:"execution"`
+	ExecDes         ExecDesc      `bson:"execDesc"`
 }
 
 type Execution struct {
@@ -133,7 +130,7 @@ func (er *Execution) Ended(t time.Time) bool {
 }
 
 func (er *Execution) CanRetry() bool {
-	return er.Result.RetryInfo != nil
+	return er.Result.NextExec.RemainExecCount > 0
 }
 
 func (er *Execution) OverExecTime(t time.Time) bool {
@@ -147,21 +144,20 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 
 type Desc struct {
 	TaskKey         string
-	ExpectStartTime time.Time
-	MaxExecCount    int32
-	MaxExecDuration time.Duration
+	ExecDesc        ExecDesc
 	Tags            []string
-	Priority        int32
 }
 
 type ExecResult struct {
-	ResultInfo  string  `bson:"resultInfo"`
-	RetryInfo *ExecDesc `bson:"omitempty"`
+	ResultInfo string    `bson:"resultInfo"`
+	NextExec   ExecDesc `bson:"next,omitempty"`
 }
 
 type ExecDesc struct {
-	ExpectRetryTime time.Time `bson:"expectRetryTime"`
+	ExpectStartTime time.Time     `bson:"expectRetryTime"`
 	MaxExecDuration time.Duration `bson:"maxExecDuration"`
+	RemainExecCount int32         `bson:"remainExec"`
+	Priority        int32         `bson:"priority"`
 }
 
 type Summery struct {
