@@ -4,283 +4,193 @@ import (
 	"context"
 	"errors"
 	"github.com/feynman-go/workshop/memo"
-	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 )
 
 var _ Scheduler = (*MemoScheduler)(nil)
 
-type schedule struct {
-	taskKey         string
-	expectStartTime time.Time
-	awakenDuration time.Duration
+type inner struct {
+	rw sync.RWMutex
+	task Task
+	timer *time.Timer
+}
+
+func (in *inner) updateTimer(timer *time.Timer) {
+	if in.timer != nil {
+		in.timer.Stop()
+	}
+	in.timer = timer
+}
+
+func (in *inner) GetTask() *Task {
+	in.rw.RLock()
+	defer in.rw.RUnlock()
+
+	task := new(Task)
+	*task = in.task
+	return task
 }
 
 type MemoScheduler struct {
-	m        *sync.Map
-	pairChan chan schedule
+	rw sync.RWMutex
+	tasks map[string]*inner
+	taskChan chan string
 	awakenDuration time.Duration
 }
 
 func NewMemoScheduler(awakenDuration time.Duration) *MemoScheduler {
 	return &MemoScheduler{
-		m:        &sync.Map{},
-		pairChan: make(chan schedule, 64),
+		tasks: map[string]*inner{},
+		taskChan: make(chan string, 64),
 		awakenDuration: awakenDuration,
 	}
 }
 
-func (scheduler *MemoScheduler) EnableTaskClock(ctx context.Context, taskKey string, expectStartTime time.Time) error {
-	pair := schedule{
-		taskKey: taskKey,
-		expectStartTime: expectStartTime,
-		awakenDuration: scheduler.awakenDuration,
+func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, taskKey string, info Info, schedule Schedule) error {
+
+	scheduler.rw.Lock()
+	in, ext := scheduler.tasks[taskKey]
+	if !ext {
+		in = &inner{}
+		scheduler.tasks[taskKey] = in
 	}
-	scheduler.m.Store(taskKey, pair)
-
-	time.AfterFunc(expectStartTime.Sub(time.Now()), func() {
-		scheduler.pairChan <- pair
-	})
-	return nil
-}
-
-func (scheduler *MemoScheduler) DisableTaskClock(ctx context.Context, taskKey string) {
-	scheduler.m.Delete(taskKey)
-}
-
-func (scheduler *MemoScheduler) WaitTaskAwaken(ctx context.Context) (taskKey string, expectStartTime time.Time, err error) {
-	tk := time.NewTicker(time.Second)
-	defer tk.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-			return
-		case <- tk.C:
-			scheduler.m.Range(func(k, v interface{}) bool {
-				s := v.(schedule)
-				if s.expectStartTime.Add(s.awakenDuration).Before(time.Now()) {
-					select {
-					case scheduler.pairChan <- s:
-					default:
-					}
-				}
-				return true
-			})
-		case pair, _ := <-scheduler.pairChan:
-			_, ok := scheduler.m.Load(pair.taskKey)
-			if ok {
-				taskKey = pair.taskKey
-				expectStartTime = pair.expectStartTime
-			}
-			return
-		}
-	}
-
-}
-
-var _ Repository = (*MemoRepository)(nil)
-
-type MemoRepository struct {
-	store       *memo.MemoStore
-	m           sync.RWMutex
-	statusIndex map[Status]int
-}
-
-func NewMemoRepository() *MemoRepository {
-	return &MemoRepository{
-		store:       memo.NewMemoStore(time.Hour, 10*time.Minute),
-		statusIndex: map[Status]int{},
-	}
-}
-
-func (ms *MemoRepository) Run(ctx context.Context) error {
-	var runCtx, cancel = context.WithCancel(ctx)
-	defer cancel()
-
-	go ms.store.Run(runCtx)
-
-	tk := time.NewTicker(3 * time.Second)
-	for ctx.Err() == nil {
-		select {
-		case <-runCtx.Done():
-			return ctx.Err()
-		case <-tk.C:
-
-		}
-	}
-	return ctx.Err()
-}
-
-type taskCtn struct {
-	rw   sync.RWMutex
-	task *Task
-}
-
-func (ctn *taskCtn) getTask() *Task {
-	var t = &Task{}
-	ctn.rw.RLock()
-	defer ctn.rw.RUnlock()
-	*t = *ctn.task
-	t.Executions = make([]*Execution, 0, len(t.Executions))
-	for _, ex := range ctn.task.Executions {
-		e := *ex
-		t.Executions = append(t.Executions, &e)
-	}
-	return t
-}
-
-func (ctn *taskCtn) occupyTask(session Session, update func(task *Task)) bool {
-	ctn.rw.Lock()
-	defer ctn.rw.Unlock()
-
-	curSession := ctn.task.Session
-	if curSession.SessionID != 0 &&
-		curSession.SessionID != session.SessionID &&
-		curSession.SessionExpires.After(time.Now()) {
-		return false
-	}
-
-	ctn.task.Session = session
-	update(ctn.task)
-	return true
-}
-
-func (ctn *taskCtn) updateBySession(sessionID int64, update func(task *Task)) bool {
-	ctn.rw.Lock()
-	defer ctn.rw.Unlock()
-
-	if ctn.task.Session.SessionID != sessionID {
-		return false
-	}
-
-	if ctn.task.Session.SessionExpires.Before(time.Now()) {
-		return false
-	}
-
-	update(ctn.task)
-	return true
-}
-
-func newMemoCtn(task *Task) *taskCtn {
-	return &taskCtn{
-		task: task,
-	}
-}
-
-func (ms *MemoRepository) OccupyTask(ctx context.Context, taskKey string, sessionTimeout time.Duration) (*Task, error) {
-	s := Session{
-		SessionID:      int64(rand.Uint32()),
-		SessionExpires: time.Now().Add(sessionTimeout),
-	}
-	t := &Task{
+	in.task = Task{
 		Key: taskKey,
+		Schedule: schedule,
+		Info: info,
 	}
+	awakeTime := in.task.Schedule.ExpectTime
+	scheduler.rw.Unlock()
 
-	// load data
-	ms.m.Lock()
-	v, loaded := ms.store.Load(taskKey, newMemoCtn(t))
-	ctn := v.(*taskCtn)
-	if !loaded {
-		ms.statusIndex[ctn.getTask().Status()]++
-	}
-	ms.m.Unlock()
-
-	before := ctn.getTask().Status()
-	if !ctn.occupyTask(s, func(task *Task) {
-		ms.onTaskStatusChange(before, task.Status(), task.Key)
-	}) {
-		return ctn.getTask(), nil
-	}
-	return ctn.getTask(), nil
-}
-
-func (ms *MemoRepository) ReleaseTaskSession(ctx context.Context, taskKey string, sessionID int64) error {
-	v, ok := ms.store.Get(taskKey)
-	if !ok {
-		return nil
-	}
-
-	if v == nil {
-		return nil
-	}
-
-	ctn := v.(*taskCtn)
-	ok = ctn.updateBySession(sessionID, func(t *Task) {
-		t.Session = Session{}
-	})
-	if !ok {
-		return nil
-	}
-
-	ms.m.Lock()
-	defer ms.m.Unlock()
-
-	t := ctn.getTask()
-	if t.Status() == StatusClosed && t.CloseType == CloseTypeSuccess {
-		ms.store.Delete(taskKey)
-	}
-
+	scheduler.schedule(in, awakeTime)
 	return nil
 }
 
-func (ms *MemoRepository) UpdateTask(ctx context.Context, task *Task) error {
-	v, ok := ms.store.Get(task.Key)
-	if !ok {
-		return errors.New("task not found")
-	}
+func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time) {
+	in.rw.Lock()
+	defer in.rw.Unlock()
 
-	ctn := v.(*taskCtn)
-	before := ctn.getTask().Status()
-	ok = ctn.updateBySession(task.Session.SessionID, func(t *Task) {
-		*t = *task
-		t.Executions = make([]*Execution, 0, len(t.Executions))
-		for _, ex := range task.Executions {
-			e := *ex
-			t.Executions = append(t.Executions, &e)
+	taskKey := in.task.Key
+	laterAwakeTime := in.task.Schedule.ExpectTime.Add(scheduler.awakenDuration)
+
+	timer := time.AfterFunc(awakeTime.Sub(time.Now()), func() {
+		scheduler.rw.RLock()
+		in, ext := scheduler.tasks[taskKey]
+		scheduler.rw.RUnlock()
+
+		if ext {
+			scheduler.schedule(in, laterAwakeTime)
+			scheduler.taskChan <- in.task.Key
 		}
-		ms.onTaskStatusChange(before, t.Status(), t.Key)
 	})
 
+	in.updateTimer(timer)
+}
+
+func (scheduler *MemoScheduler) CloseTaskSchedule(ctx context.Context, taskKey string) error {
+	scheduler.rw.Lock()
+	defer scheduler.rw.Unlock()
+
+	defer delete(scheduler.tasks, taskKey)
+
+	in, ok := scheduler.tasks[taskKey]
 	if !ok {
-		return errors.New("session not accept")
+		return nil
 	}
+
+	in.rw.Lock()
+	defer in.rw.Unlock()
+	// stop timer
+	in.updateTimer(nil)
 	return nil
 }
 
-func (ms *MemoRepository) ReadTask(ctx context.Context, taskKey string) (*Task, error) {
-	v, ok := ms.store.Get(taskKey)
-	if !ok || v == nil {
-		return nil, nil
+func (scheduler *MemoScheduler) WaitTaskSchedule(ctx context.Context) (task *Task, err error) {
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+	case taskKey, _ := <-scheduler.taskChan:
+		scheduler.rw.RLock()
+		in, ok := scheduler.tasks[taskKey]
+		scheduler.rw.RUnlock()
+		if ok {
+			task = in.GetTask()
+		}
 	}
-	ctn := v.(*taskCtn)
-	t := ctn.getTask()
-	return t, nil
+	return
 }
 
-func (ms *MemoRepository) GetTaskSummary(ctx context.Context) (*Summery, error) {
-	m := make(map[Status]int64)
-	ms.m.RLock()
-	defer ms.m.RUnlock()
-
-	for s, count := range ms.statusIndex {
-		m[s] = int64(count)
+func (scheduler *MemoScheduler) ReadTask(ctx context.Context, taskKey string) (*Task, error) {
+	scheduler.rw.RLock()
+	in, ok := scheduler.tasks[taskKey]
+	scheduler.rw.RUnlock()
+	if !ok {
+		return nil, nil
+	} else {
+		return in.GetTask(), nil
 	}
+}
 
+func (scheduler *MemoScheduler) TaskSummery(ctx context.Context) (*Summery, error) {
+	var count = 0
+	scheduler.rw.RLock()
+	count = len(scheduler.tasks)
+	scheduler.rw.RUnlock()
 	return &Summery{
-		StatusCount: m,
+		StatusCount: map[StatusCode] int64{
+			StatusExecuting: int64(count),
+		},
 	}, nil
 }
 
-func (ms *MemoRepository) onTaskStatusChange(before, current Status, taskKey string) {
-	ms.m.Lock()
-	defer ms.m.Unlock()
+var _ ExecutionRepository = (*MemoExecRepository)(nil)
 
-	if before == current {
-		return
+type MemoExecRepository struct {
+	store       *memo.MemoStore
+	taskIndex   *memo.MemoStore
+	m           sync.RWMutex
+	statusIndex map[StatusCode]int
+}
+
+func NewMemoRepository() *MemoExecRepository {
+	return &MemoExecRepository{
+		store:       memo.NewMemoStore(time.Hour, 10*time.Minute),
+		statusIndex: map[StatusCode]int{},
 	}
+}
 
-	ms.statusIndex[before]--
-	ms.statusIndex[current]++
+func (ms *MemoExecRepository) NewExecutionID(ctx context.Context, taskKey string) (int64, error) {
+	return time.Now().UnixNano(), nil
+}
+
+func (ms *MemoExecRepository) FindExecution(ctx context.Context, taskKey string, executionID int64) (*Execution, error) {
+	d, ok := ms.store.Get(taskKey + ":" + strconv.FormatInt(executionID, 16))
+	if !ok {
+		return nil, nil
+	}
+	ex, ok := d.(*Execution)
+	if !ok {
+		return nil, errors.New("not execution")
+	}
+	return ex, nil
+}
+
+func (ms *MemoExecRepository) UpdateExecution(ctx context.Context, execution *Execution) error {
+	id := execution.TaskID + ":" + strconv.FormatInt(execution.ID, 16)
+	return ms.store.Set(id, execution)
+}
+
+func (ms *MemoExecRepository) Run(ctx context.Context) error {
+	var runCtx, cancel = context.WithCancel(ctx)
+	defer cancel()
+
+	return ms.store.Run(runCtx)
+}
+
+var taskListPool = &sync.Pool{
+	New: func() interface{} {
+		return []string{}
+	},
 }

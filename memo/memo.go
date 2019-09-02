@@ -2,7 +2,6 @@ package memo
 
 import (
 	"context"
-	"github.com/pkg/errors"
 	"log"
 	"math/rand"
 	"sync"
@@ -74,16 +73,16 @@ func (store *MemoStore) Delete(id interface{}) {
 	store.m.Delete(id)
 }
 
-func (store *MemoStore) getData(id interface{}) *memoData {
-	md, _ := store.loadData(id, nil)
-	return md
+func (store *MemoStore) getData(key interface{}) *memoData {
+	v, ext := store.m.Load(key)
+	if !ext {
+		return nil
+	}
+	return v.(*memoData)
 }
 
-func (store *MemoStore) loadData(id interface{}, deft interface{}) (*memoData, bool) {
-	data, ok := store.pool.Get().(*memoData)
-	if !ok {
-		return nil, false
-	}
+func (store *MemoStore) loadData(id interface{}, deft interface{}) (interface{}, *memoData, bool) {
+	data := store.pool.Get().(*memoData)
 	data.Set(deft)
 
 	v, loaded := store.m.LoadOrStore(id, data)
@@ -91,11 +90,11 @@ func (store *MemoStore) loadData(id interface{}, deft interface{}) (*memoData, b
 		data.value = nil
 		store.pool.Put(data)
 	}
-	data, ok = v.(*memoData)
-	if !ok {
-		return nil, loaded
+	data = v.(*memoData)
+	if loaded {
+		return deft, data, loaded
 	}
-	return data, loaded
+	return data.GetValue(), data, loaded
 }
 
 func (store *MemoStore) KeepLive(id interface{}) {
@@ -107,11 +106,10 @@ func (store *MemoStore) KeepLive(id interface{}) {
 }
 
 func (store *MemoStore) Set(id, value interface{}) error {
-	d := store.getData(id)
-	if d == nil {
-		return errors.New("not exists")
+	_, d, loaded := store.loadData(id, value)
+	if loaded {
+		d.Set(value)
 	}
-	d.Set(value)
 	return nil
 }
 
@@ -120,12 +118,13 @@ func (store *MemoStore) Get(id interface{}) (interface{}, bool) {
 	if d == nil {
 		return nil, false
 	}
-	return d.GetValue(), true
+	ret := d.GetValue()
+	return ret, !IsEmpty(ret)
 }
 
 func (store *MemoStore) Load(id interface{}, deft interface{}) (interface{}, bool) {
-	d, loaded := store.loadData(id, deft)
-	return d.GetValue(), loaded
+	v, _, loaded := store.loadData(id, deft)
+	return v, loaded
 }
 
 func (store *MemoStore) Live(id interface{}) time.Time {
@@ -158,7 +157,7 @@ type memoData struct {
 func (data *memoData) OkUntil(t time.Time) bool {
 	data.rw.RLock()
 	defer data.rw.RUnlock()
-	return data.liveUntil.After(t)
+	return data.liveUntil.After(t) && !data.isEmpty()
 }
 
 func (data *memoData) GetValue() interface{} {
@@ -166,7 +165,7 @@ func (data *memoData) GetValue() interface{} {
 		ag interface{}
 	)
 	if !data.OkUntil(time.Now()) {
-		return nil
+		return empty
 	}
 	data.rw.RLock()
 	ag = data.value
@@ -182,6 +181,10 @@ func (data *memoData) KeepLive() {
 }
 
 func (data *memoData) keepLive() {
+	if data.isEmpty() {
+		return
+	}
+
 	delta := time.Duration(rand.Int63n(int64(data.liveDelta)))
 	n := time.Now()
 	data.liveUntil = n.Add(data.liveDuration - delta)
@@ -196,3 +199,21 @@ func (data *memoData) Set(value interface{}) {
 	data.lastUpdate = n
 	data.keepLive()
 }
+
+func (data *memoData) IsEmpty() bool {
+	data.rw.Lock()
+	defer data.rw.Unlock()
+
+	return data.isEmpty()
+}
+
+func (data *memoData) isEmpty() bool {
+	return data.value == empty
+}
+
+func IsEmpty(v interface{}) bool {
+	return v == empty
+}
+
+
+var empty = &struct{}{}

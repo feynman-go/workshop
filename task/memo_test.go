@@ -10,17 +10,16 @@ import (
 
 func TestManagerBasic(t *testing.T) {
 	rep := NewMemoRepository()
-	sch := NewMemoScheduler(1 * time.Second)
+	sch := NewMemoScheduler(10 * time.Second)
 
 	g := &sync.WaitGroup{}
 	g.Add(1)
 	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
 		g.Done()
 		return cb.Callback(cb, ExecResult{
-			ExecResultType: ExecResultTypeSuccess,
 			ResultInfo:     "",
 		})
-	}))
+	}), 2 * time.Second)
 
 	go func() {
 		err := manager.Run(context.Background())
@@ -29,12 +28,10 @@ func TestManagerBasic(t *testing.T) {
 		}
 	}()
 
-	_, err := manager.ApplyNewTask(context.Background(), Desc{
+	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		Strategy: ExecStrategy{
-			ExpectStartTime: time.Now(),
-			MaxRetryTimes:   3,
-		},
+		ExpectStartTime: time.Now(),
+		MaxExecCount:   3,
 	})
 
 	if err != nil {
@@ -45,7 +42,7 @@ func TestManagerBasic(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	task, err := rep.ReadTask(context.Background(), "1")
+	task, err := sch.ReadTask(context.Background(), "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +50,7 @@ func TestManagerBasic(t *testing.T) {
 		t.Fatal("status not closed")
 	}
 
-	sm, err := rep.GetTaskSummary(context.Background())
+	sm, err := sch.TaskSummery(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,12 +66,11 @@ func TestManagerExpectTime(t *testing.T) {
 	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
 		atomic.StoreInt32(&flag, 1)
 		defer atomic.StoreInt32(&flag, 2)
-		time.Sleep(2 * time.Second)
+		time.Sleep(1 * time.Second)
 		return cb.Callback(cb, ExecResult{
-			ExecResultType: ExecResultTypeSuccess,
 			ResultInfo:     "",
 		})
-	}))
+	}), 2 * time.Second)
 
 	go func() {
 		err := manager.Run(context.Background())
@@ -83,12 +79,10 @@ func TestManagerExpectTime(t *testing.T) {
 		}
 	}()
 
-	_, err := manager.ApplyNewTask(context.Background(), Desc{
+	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		Strategy: ExecStrategy{
-			ExpectStartTime: time.Now().Add(time.Second),
-			MaxRetryTimes:   3,
-		},
+		ExpectStartTime: time.Now().Add(time.Second),
+		MaxExecCount:   3,
 	})
 
 	if err != nil {
@@ -109,7 +103,7 @@ func TestManagerExpectTime(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	task, err := rep.ReadTask(context.Background(), "1")
+	task, err := sch.ReadTask(context.Background(), "1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +111,7 @@ func TestManagerExpectTime(t *testing.T) {
 		t.Fatal("status not closed")
 	}
 
-	sm, err := rep.GetTaskSummary(context.Background())
+	sm, err := sch.TaskSummery(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +126,20 @@ func TestTaskRetry(t *testing.T) {
 	var count int32
 
 	manager := NewManager(rep, sch, FuncExecutor(func(cb Context) error {
-		atomic.AddInt32(&count, 1)
+		n := atomic.AddInt32(&count, 1)
+		ed := &ExecDesc {
+			ExpectRetryTime: time.Now().Add(time.Second),
+			MaxExecDuration: time.Second,
+		}
+
+		if n > 3 {
+			ed = nil
+		}
 		return cb.Callback(cb, ExecResult{
-			ExecResultType: ExecResultTypeSuccess,
 			ResultInfo:     "",
+			RetryInfo:  ed,
 		})
-	}))
+	}), 2 * time.Second)
 
 	go func() {
 		err := manager.Run(context.Background())
@@ -146,37 +148,28 @@ func TestTaskRetry(t *testing.T) {
 		}
 	}()
 
-	_, err := manager.ApplyNewTask(context.Background(), Desc{
+	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
-		Strategy: ExecStrategy{
-			ExpectStartTime: time.Now(),
-			MaxRetryTimes:   3,
-		},
+		ExpectStartTime: time.Now(),
+		MaxExecCount:   10,
 	})
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	time.Sleep(4 * time.Second)
 
+	if atomic.LoadInt32(&count) != 3 {
+		t.Fatal("retry count expect 3")
+	}
 
-	g.Wait()
-
-	time.Sleep(2 * time.Second)
-
-	task, err := rep.ReadTask(context.Background(), "1")
+	task, err := sch.ReadTask(context.Background(), "1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if task != nil {
 		t.Fatal("status not closed")
 	}
-
-	sm, err := rep.GetTaskSummary(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Log(sm.StatusCount)
 }
 

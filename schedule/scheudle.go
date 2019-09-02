@@ -13,56 +13,72 @@ type Scheduler struct {
 	l       *list.List
 	pool    *promise.Pool
 	newChan chan struct{}
+	m *sync.Map
 }
 
 func New(pool *promise.Pool) *Scheduler {
 	return &Scheduler{
 		l:       list.New(),
 		pool:    pool,
-		newChan: make(chan struct{}),
+		newChan: make(chan struct{}, 2),
+		m: &sync.Map{},
 	}
 }
 
-func (schedule *Scheduler) AddPlan(name string, startTime time.Time, endTime time.Time, action func(ctx context.Context) error) {
-	var node = &innerNode{
-		key:         name,
+func (sr *Scheduler) AddPlan(startTime time.Time, endTime time.Time, action func(ctx context.Context) error) *Schedule {
+	var node = &Schedule{
 		action:      action,
 		expectStart: startTime,
 		endTime:     endTime,
 	}
-	schedule.rw.Lock()
-	defer schedule.rw.Unlock()
+	sr.rw.Lock()
+	defer sr.rw.Unlock()
 
-	head := schedule.l.Front()
+	head := sr.l.Front()
 	for ; head != nil; head = head.Next() {
-		in := head.Value.(*innerNode)
+		in := head.Value.(*Schedule)
 		if node.expectStart.Before(in.expectStart) {
 			break
 		}
 	}
+
 	if head != nil {
-		schedule.l.InsertBefore(node, head)
+		node.e = sr.l.InsertBefore(node, head)
 	} else {
-		schedule.l.PushFront(node)
+		node.e = sr.l.PushFront(node)
 	}
 
-	select {
-	case schedule.newChan <- struct{}{}:
-	default:
-	}
+	sr.m.Store(node, true)
+
+	go func() {
+		select {
+		case sr.newChan <- struct{}{}:
+		default:
+		}
+	}()
+	return node
 }
 
-func (schedule *Scheduler) peak() *innerNode {
-	schedule.rw.Lock()
-	defer schedule.rw.Unlock()
+func (sr *Scheduler) Remove(schedule Schedule) {
+	sr.rw.Lock()
+	defer sr.rw.Unlock()
 
-	head := schedule.l.Front()
+	sr.l.Remove(schedule.e)
+	sr.m.Delete(schedule)
+}
+
+
+func (sr *Scheduler) peak() *Schedule {
+	sr.rw.Lock()
+	defer sr.rw.Unlock()
+
+	head := sr.l.Front()
 	if head == nil {
 		return nil
 	}
 
-	//schedule.l.Remove(head)
-	node, ok := head.Value.(*innerNode)
+	//sr.l.Remove(head)
+	node, ok := head.Value.(*Schedule)
 	if !ok {
 		return nil
 	}
@@ -70,28 +86,28 @@ func (schedule *Scheduler) peak() *innerNode {
 	return node
 }
 
-func (schedule *Scheduler) pop() {
-	schedule.rw.Lock()
-	defer schedule.rw.Unlock()
+func (sr *Scheduler) pop() {
+	sr.rw.Lock()
+	defer sr.rw.Unlock()
 
-	head := schedule.l.Front()
+	head := sr.l.Front()
 	if head == nil {
 		return
 	}
-	schedule.l.Remove(head)
+	sr.l.Remove(head)
 }
 
-func (schedule *Scheduler) Run(ctx context.Context) error {
+func (sr *Scheduler) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		var (
-			headNode = schedule.peak()
+			headNode = sr.peak()
 			tm       *time.Timer
 		)
 		if headNode != nil {
 			now := time.Now()
 			tm = time.NewTimer(headNode.expectStart.Sub(now))
 			if !headNode.endTime.IsZero() && headNode.endTime.Before(now) {
-				schedule.pop()
+				sr.pop()
 				continue
 			}
 		}
@@ -101,21 +117,23 @@ func (schedule *Scheduler) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-schedule.newChan:
+		case <-sr.newChan:
 		case cur := <-tm.C:
-			schedule.pop()
-			if headNode != nil && headNode.action != nil {
+			sr.pop()
+
+			_, ok := sr.m.Load(headNode)
+			if headNode != nil && headNode.action != nil && ok {
 				runCtx, _ := context.WithTimeout(ctx, headNode.endTime.Sub(cur))
-				schedule.startAction(runCtx, headNode)
+				sr.startAction(runCtx, headNode)
 			}
 		}
 	}
 	return ctx.Err()
 }
 
-func (schedule *Scheduler) startAction(ctx context.Context, node *innerNode) {
+func (sr *Scheduler) startAction(ctx context.Context, node *Schedule) {
 	if node.action != nil {
-		p := promise.NewPromise(schedule.pool, func(ctx context.Context, req promise.Request) promise.Result {
+		p := promise.NewPromise(sr.pool, func(ctx context.Context, req promise.Request) promise.Result {
 			runCtx, _ := context.WithTimeout(ctx, node.endTime.Sub(time.Now()))
 			err := node.action(runCtx)
 			return promise.Result{
@@ -126,8 +144,8 @@ func (schedule *Scheduler) startAction(ctx context.Context, node *innerNode) {
 	}
 }
 
-type innerNode struct {
-	key         string
+type Schedule struct {
+	e *list.Element
 	action      func(ctx context.Context) error
 	expectStart time.Time
 	endTime     time.Time

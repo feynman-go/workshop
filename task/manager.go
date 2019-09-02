@@ -2,11 +2,12 @@ package task
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"github.com/feynman-go/workshop/promise"
+	"hash"
+	"hash/crc32"
 	"log"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -20,19 +21,19 @@ func (fe FuncExecutor) StartExecution(cb Context) error {
 	return fe(cb)
 }
 
-type Repository interface {
-	//return ErrOccupied
-	OccupyTask(ctx context.Context, taskKey string, sessionTimeout time.Duration) (task *Task, err error)
-
-	ReleaseTaskSession(ctx context.Context, taskKey string, sessionID int64) error
-
-	UpdateTask(ctx context.Context, task *Task) error
-
-	ReadTask(ctx context.Context, taskKey string) (*Task, error)
-
-	GetTaskSummary(ctx context.Context) (*Summery, error)
+type ExecutionRepository interface {
+	NewExecutionID(ctx context.Context, taskKey string) (int64, error)
+	FindExecution(ctx context.Context, taskKey string, executionID int64) (*Execution, error)
+	UpdateExecution(ctx context.Context, execution *Execution) error
 }
 
+type Scheduler interface {
+	ScheduleTask(ctx context.Context, taskKey string, info Info, schedule Schedule) error
+	CloseTaskSchedule(ctx context.Context, taskKey string) error
+	WaitTaskSchedule(ctx context.Context) (task *Task, err error)
+	ReadTask(ctx context.Context, taskKey string) (*Task, error)
+	TaskSummery(ctx context.Context) (*Summery, error)
+}
 
 type Context struct {
 	context.Context
@@ -55,88 +56,133 @@ func (cb Context) Callback(ctx context.Context, res ExecResult) error {
 }
 
 type Manager struct {
-	taskSessionTimeOut time.Duration
+	//taskSessionTimeOut time.Duration
 	pool               *promise.Pool
-	repository         Repository
+	execRep ExecutionRepository
 	executor           Executor
 	scheduler          Scheduler
+	maxRedundancy time.Duration
 }
 
-func NewManager(repository Repository, scheduler Scheduler, executor Executor) *Manager {
-	p := promise.NewPool(4)
+func NewManager(repository ExecutionRepository, scheduler Scheduler, executor Executor, maxRedundancy time.Duration) *Manager {
+	p := promise.NewPool(8)
 	return &Manager{
-		taskSessionTimeOut: 2*time.Minute - time.Duration(rand.Int31n(60))*time.Second,
-		repository:         repository,
 		executor:           executor,
 		pool:               p,
 		scheduler:          scheduler,
+		execRep: 			repository,
+		maxRedundancy:      maxRedundancy,
 	}
 }
 
-func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) (*Task, error) {
-	t, err := svc.repository.OccupyTask(ctx, desc.TaskKey, svc.taskSessionTimeOut)
+func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) error {
+	now := time.Now()
+	err := svc.scheduler.ScheduleTask(ctx, desc.TaskKey, Info{
+		Tags: desc.Tags,
+		MaxExecCount: desc.MaxExecCount,
+		MaxExecDuration: desc.MaxExecDuration,
+	}, Schedule{
+		AcceptTime: now,
+		ExpectTime: desc.ExpectStartTime,
+		Priority: desc.Priority,
+	})
+
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	if desc.Strategy.MaxDuration == 0 {
-		desc.Strategy.MaxDuration = time.Second
-	}
-	if desc.Strategy.MaxRetryTimes == 0 {
-		desc.Strategy.MaxRetryTimes = 1
-	}
-
-	t.UpdateExecStrategy(desc.Strategy)
-
-	t.Init()
-
-	err = svc.processTask(ctx, t)
-	if err != nil {
-		return t, err
-	}
-	return t, nil
+	return err
 }
 
 func (svc *Manager) GetTaskSummary(ctx context.Context) (*Summery, error) {
-	sum, err := svc.repository.GetTaskSummary(ctx)
+	sum, err := svc.scheduler.TaskSummery(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return sum, nil
 }
 
-func (svc *Manager) handleStartTimeOn(ctx context.Context, task *Task) (err error) {
-	now := time.Now()
-	_, ok := task.StartCurrentExec(now)
-	if !ok {
-		err = errors.New("start startExec failed")
-		return err
-	}
 
-	err = svc.repository.UpdateTask(ctx, task)
+func (svc *Manager) TaskCallback(ctx context.Context, taskKey string, exec *Execution, result ExecResult) error {
+	t, err := svc.scheduler.ReadTask(ctx, taskKey)
 	if err != nil {
-		err = fmt.Errorf("update task err: %v", err)
 		return err
 	}
 
-	if svc.executor != nil {
-		exc := task.CurrentExecution()
-		svc.startExec(ctx, task.Key, exc)
-	} else {
-		err = svc.closeTask(ctx, task, CloseTypeNoExecutor)
+	exec, err = svc.execRep.FindExecution(ctx, taskKey, exec.ID)
+	if err != nil {
+		return err
 	}
+
+	if exec == nil {
+		return nil
+	}
+
+	exec.End(result, time.Now())
+
+	if t.Info.ExecutionID != exec.ID {
+	} else {
+		now := time.Now()
+		err = svc.scheduler.ScheduleTask(ctx, taskKey, t.Info, Schedule{
+			AcceptTime: now,
+			ExpectTime: now,
+			Priority: t.Schedule.Priority,
+		})
+	}
+
 	return err
 }
 
-
-
-func (svc *Manager) TaskCallback(ctx context.Context, taskKey string, exec *Execution, result ExecResult) error {
-	t, err := svc.repository.OccupyTask(ctx, taskKey, svc.taskSessionTimeOut)
+func (svc *Manager) newTaskExecution(ctx context.Context, task *Task, execDesc ExecDesc) (*Execution, error) {
+	id, err := svc.execRep.NewExecutionID(ctx, task.Key)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	t.CloseExec(result, exec.Seq())
-	return svc.processTask(ctx, t)
+
+	maxDuration := execDesc.MaxExecDuration
+	if maxDuration == 0 {
+		maxDuration = task.Info.MaxExecDuration
+	}
+
+	if execDesc.ExpectRetryTime.IsZero() {
+		execDesc.ExpectRetryTime = time.Now()
+	}
+
+	var now = time.Now()
+
+	task.Schedule.ExpectTime = execDesc.ExpectRetryTime
+	task.Schedule.AcceptTime = now
+	task.Info.ExecutionID = id
+
+	exec := &Execution{
+		ID: id,
+		TaskID: task.Key,
+		ExpectStartTime: execDesc.ExpectRetryTime,
+		CreateTime: time.Now(),
+		MaxExecDuration: maxDuration,
+	}
+
+	err = svc.execRep.UpdateExecution(ctx, exec)
+	if err != nil {
+		return nil, err
+	}
+
+	err = svc.scheduler.ScheduleTask(ctx, task.Key, task.Info, task.Schedule)
+	return exec, err
+}
+
+func (svc *Manager) execCanRetry(task *Task, exec *Execution) bool {
+	if task.Info.MaxExecCount <= task.Info.ExecCount {
+		return false
+	}
+	return exec.CanRetry()
+}
+
+func (svc *Manager) getRandomRedundancy() time.Duration {
+	return time.Duration(rand.Int63n(int64(svc.maxRedundancy)))
+}
+
+func (svc *Manager) getExecutingAwakeTime(exec *Execution) time.Time {
+	return exec.ExpectStartTime.Add(exec.MaxExecDuration).Add(svc.getRandomRedundancy())
 }
 
 func (svc *Manager) processTask(ctx context.Context, task *Task) error {
@@ -148,50 +194,67 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 		return nil
 	}
 
-	defer func() {
-		if task != nil {
-			svc.repository.ReleaseTaskSession(ctx, task.Key, task.Session.SessionID)
-		}
-	}()
+	var exec *Execution
+	var t = time.Now()
 
-	var now = time.Now()
-	switch s := task.Status(); s {
-	case StatusClosed:
-		err = svc.closeTask(ctx, task, task.CloseType)
-	case StatusCreated:
-		err = svc.closeTask(ctx, task, CloseTypeNotInited)
-	case StatusInit:
-		_, err = svc.retryTaskOrClose(ctx, task)
-	case StatusWaitingExec:
-		if task.WaitOvertime(now) {
-			_, err = svc.retryTaskOrClose(ctx, task)
-		} else if task.ReadyExec(now) {
-			err = svc.handleStartTimeOn(ctx, task)
+	if task.Info.ExecutionID == 0 {
+		exec, err = svc.newTaskExecution(ctx, task, ExecDesc{
+			ExpectRetryTime: task.Schedule.ExpectTime,
+		})
+	} else {
+		exec, err = svc.execRep.FindExecution(ctx, task.Key, task.Info.ExecutionID)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	switch  {
+	case exec.ReadyToStart(t):
+		svc.doExec(ctx, task, exec)
+	case exec.WaitingStart(t):
+	case exec.Executing(t):
+		if exec.OverExecTime(t) {
+			_, err = svc.newTaskExecution(ctx, task, ExecDesc{
+				ExpectRetryTime: svc.getExecutingAwakeTime(exec),
+			})
 		}
-	case StatusExecuting:
-		if task.ExecOvertime(now) {
-			_, err = svc.retryTaskOrClose(ctx, task)
-		}
-	case StatusExecuteFinished:
-		er := task.CurrentExecution()
-		if er != nil && er.result.ExecResultType == ExecResultTypeSuccess {
-			err = svc.closeTask(ctx, task, CloseTypeSuccess)
+	case exec.Ended(t):
+		if svc.execCanRetry(task, exec) {
+			_, err = svc.newTaskExecution(ctx, task, *exec.Result.RetryInfo)
 		} else {
-			_, err = svc.retryTaskOrClose(ctx, task)
+			svc.closeTask(ctx, task)
 		}
-	default:
-		err = fmt.Errorf("bad task status %v", s.String())
+	}
+
+	if err != nil {
+		return err
 	}
 
 	return err
 }
 
-func (svc *Manager) startExec(ctx context.Context, taskKey string, execution *Execution) {
+func (svc *Manager) doExec(ctx context.Context, task *Task, execution *Execution) {
+	execution.Start(time.Now())
+	task.Schedule.ExpectTime = svc.getExecutingAwakeTime(execution)
+	task.Info.MaxExecCount ++
+	task.Info.Executing = true
+
+	err := svc.scheduler.ScheduleTask(ctx, task.Key, task.Info, task.Schedule)
+	if err != nil {
+		return
+	}
+
+	err = svc.execRep.UpdateExecution(ctx, execution)
+	if err != nil {
+		return
+	}
+
 	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
 		err := svc.executor.StartExecution(Context{
 			Context:   ctx,
 			manager:   svc,
-			taskKey:    taskKey,
+			taskKey:   task.Key,
 			execution: execution,
 		})
 		return promise.Result{
@@ -202,97 +265,59 @@ func (svc *Manager) startExec(ctx context.Context, taskKey string, execution *Ex
 	return
 }
 
-func (svc *Manager) closeTask(ctx context.Context, t *Task, closeType CloseType) error {
-	defer svc.scheduler.DisableTaskClock(ctx, t.Key)
-	t.Close(closeType)
-	err := svc.repository.UpdateTask(ctx, t)
+func (svc *Manager) closeTask(ctx context.Context, t *Task) {
+	if svc.scheduler.CloseTaskSchedule(ctx, t.Key) == nil {
+		//TODO close memory
+
+	}
+}
+
+func (svc *Manager) doProcess(ctx context.Context, task *Task) error {
+	h := hashPool.Get().(hash.Hash32)
+	defer hashPool.Put(h)
+	h.Reset()
+	_, err := h.Write([]byte(task.Key))
 	if err != nil {
 		return err
 	}
-	return nil
+
+	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
+		err = svc.processTask(ctx, task)
+		return promise.Result{
+			Err: err,
+		}
+	}, promise.PartitionMiddle(true), promise.EventKeyMiddle(int(h.Sum32())))
+	if p.Start(ctx) {
+		return nil
+	}
+	return ctx.Err()
 }
 
-func (svc *Manager) planExecutionSchedule(ctx context.Context, t *Task) error {
-	er := t.CurrentExecution()
-	if er == nil {
-		return errors.New("can not get current startExec record")
-	}
-	return svc.scheduler.EnableTaskClock(ctx, t.Key, er.expectStartTime)
-}
-
-func (svc *Manager) retryTask(ctx context.Context, t *Task) (bool, error) {
-	if !t.CanRetry() {
-		return false, nil
-	}
-	err := svc.readyTask(ctx, t, false)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (svc *Manager) readyTask(ctx context.Context, t *Task, overlap bool) error {
-	err := t.ReadyNewExec(overlap)
-	if err != nil {
-		defer svc.repository.ReleaseTaskSession(ctx, t.Key, t.Session.SessionID)
-		log.Println("ready new task:", err)
-		return err
-	}
-
-	err = svc.repository.UpdateTask(ctx, t)
-	if err != nil {
-		defer svc.repository.ReleaseTaskSession(ctx, t.Key, t.Session.SessionID)
-		log.Println("update task err:", err)
-		return err
-	}
-
-	err = svc.planExecutionSchedule(ctx, t)
-	if err != nil {
-		defer svc.repository.ReleaseTaskSession(ctx, t.Key, t.Session.SessionID)
-		log.Println("release task session:", err)
-		return err
-	}
-	return nil
-}
-
-func (svc *Manager) retryTaskOrClose(ctx context.Context, task *Task) (retry bool, err error) {
-	retry, err = svc.retryTask(ctx, task)
-	if err == nil && !retry {
-		err = svc.closeTask(ctx, task, CloseTypeNoMoreRetry)
-	}
-	return
-}
-
-
-func (svc *Manager) runSupervisor(ctx context.Context) error {
+func (svc *Manager) runScheduler(ctx context.Context) error {
 	for ctx.Err() == nil {
-		taskKey, _, err := svc.scheduler.WaitTaskAwaken(ctx)
+		task, err := svc.scheduler.WaitTaskSchedule(ctx)
 		if err != nil {
 			if err == context.Canceled || err == context.DeadlineExceeded {
 				continue
 			}
 			return err
 		}
-		task, err := svc.repository.OccupyTask(ctx, taskKey, svc.taskSessionTimeOut)
+		err = svc.doProcess(ctx, task)
 		if err != nil {
-			log.Println("repository OccupyTask err:", err)
+			log.Println("process task err:", err)
 			continue
-		}
-		err = svc.processTask(ctx, task)
-		if err != nil {
-			return err
 		}
 	}
 	return ctx.Err()
 }
 
 func (svc *Manager) Run(ctx context.Context) error {
-	return svc.runSupervisor(ctx)
+	return svc.runScheduler(ctx)
 }
 
-type Scheduler interface {
-	EnableTaskClock(ctx context.Context, taskKey string, expectStartTime time.Time) error
-	DisableTaskClock(ctx context.Context, taskKey string)
 
-	WaitTaskAwaken(ctx context.Context) (taskKey string, expectStartTime time.Time, err error)
+var hashPool = sync.Pool{
+	New: func() interface{} {
+		return crc32.NewIEEE()
+	},
 }

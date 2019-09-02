@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 )
@@ -155,7 +154,7 @@ func (w *worker) run() (err error) {
 	c := w.c
 	defer func() {
 		if r := recover(); r != nil {
-			debug.PrintStack()
+			//debug.PrintStack()
 			err = fmt.Errorf("recove from %v", r)
 			return
 		}
