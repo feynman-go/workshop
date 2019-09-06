@@ -8,24 +8,28 @@ import (
 	"time"
 )
 
-// TODO
-func Run(ctx context.Context, runner ...func(ctx context.Context) bool) error {
-	rt := NewRoot()
-	for i := range runner {
-		var r = runner[i]
-		rt.Fork(r)
+func RunParallel(ctx context.Context, runner ...func(ctx context.Context) ) {
+	var cancel func()
+	ctx, cancel = context.WithCancel(ctx)
+
+	startGroup := &sync.WaitGroup{}
+	endGroup := &sync.WaitGroup{}
+
+	for _, f := range runner {
+		startGroup.Add(1)
+		endGroup.Add(1)
+		go func(ctx context.Context, f func(ctx context.Context), cancel func()) {
+			startGroup.Done()
+			defer cancel()
+			defer endGroup.Done()
+			if ctx.Err() == nil {
+				f(ctx)
+			}
+		}(ctx, f, cancel)
 	}
 
-	rt.Start()
-
-	select {
-	case <- ctx.Done():
-		rt.Close()
-		<- rt.Closed()
-		return ctx.Err()
-	case <- rt.Closed():
-		return nil
-	}
+	startGroup.Wait()
+	endGroup.Wait()
 }
 
 type status int32

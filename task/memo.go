@@ -12,23 +12,56 @@ var _ Scheduler = (*MemoScheduler)(nil)
 type inner struct {
 	rw sync.RWMutex
 	task Task
+	overlap *Task
 	timer *time.Timer
 }
 
-func (in *inner) updateTimer(timer *time.Timer) {
+func (in *inner) UpdateTask(task Task, overlap bool) (ok bool) {
+	in.rw.Lock()
+	defer in.rw.Unlock()
+
+	if in.task.Seq > task.Seq && !overlap {
+		return false
+	}
+
+	var cur = in.task
+	in.overlap = nil
+	if overlap {
+		in.overlap = &cur
+	}
+
+	in.task = task
+	in.task.Seq ++
+	if in.timer != nil {
+		in.timer.Stop()
+		in.timer = nil
+	}
+	return true
+}
+
+func (in *inner) UpdateTimer(timer *time.Timer) {
+	in.rw.Lock()
+	defer in.rw.Unlock()
+
 	if in.timer != nil {
 		in.timer.Stop()
 	}
 	in.timer = timer
 }
 
-func (in *inner) GetTask() *Task {
+func (in *inner) GetAwaken() Awaken {
 	in.rw.RLock()
 	defer in.rw.RUnlock()
 
-	task := new(Task)
-	*task = in.task
-	return task
+	awk := Awaken {
+		Task: in.task,
+	}
+	if in.overlap != nil {
+		olp := new(Task)
+		*olp = *in.overlap
+		awk.OverLapped = olp
+	}
+	return awk
 }
 
 type MemoScheduler struct {
@@ -46,28 +79,35 @@ func NewMemoScheduler(awakenDuration time.Duration) *MemoScheduler {
 	}
 }
 
-func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, task Task) error {
-
+func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, task Task, overlap bool) (Task, error) {
 	scheduler.rw.Lock()
 	in, ext := scheduler.tasks[task.Key]
+	var awakeTime = task.Schedule.AwakenTime
 	if !ext {
-		in = &inner{}
+		in = &inner {
+			task: task,
+		}
 		scheduler.tasks[task.Key] = in
-	}
-	in.task = task.Copy()
-	awakeTime := in.task.Schedule.AwakenTime
-	scheduler.rw.Unlock()
+	} else {
+		if !in.UpdateTask(task, overlap) {
+			scheduler.rw.Unlock()
+			return task, errors.New("schedule task err")
+		}
+		if overlap {
+			awakeTime = time.Now()
+		} else {
+			awakeTime = in.GetAwaken().Task.Schedule.AwakenTime
+		}
 
+	}
+	scheduler.rw.Unlock()
 	scheduler.schedule(in, awakeTime)
-	return nil
+	return in.GetAwaken().Task, nil
 }
 
 func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time) {
-	in.rw.Lock()
-	defer in.rw.Unlock()
-
-	taskKey := in.task.Key
-	laterAwakeTime := in.task.Schedule.AwakenTime.Add(scheduler.awakenDuration)
+	taskKey := in.GetAwaken().Task.Key
+	laterAwakeTime := awakeTime.Add(scheduler.awakenDuration)
 
 	timer := time.AfterFunc(awakeTime.Sub(time.Now()), func() {
 		scheduler.rw.RLock()
@@ -80,7 +120,7 @@ func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time) {
 		}
 	})
 
-	in.updateTimer(timer)
+	in.UpdateTimer(timer)
 }
 
 func (scheduler *MemoScheduler) CloseTaskSchedule(ctx context.Context, taskKey string) error {
@@ -94,14 +134,11 @@ func (scheduler *MemoScheduler) CloseTaskSchedule(ctx context.Context, taskKey s
 		return nil
 	}
 
-	in.rw.Lock()
-	defer in.rw.Unlock()
-	// stop timer
-	in.updateTimer(nil)
+	in.UpdateTimer(nil)
 	return nil
 }
 
-func (scheduler *MemoScheduler) WaitTaskSchedule(ctx context.Context) (task *Task, err error) {
+func (scheduler *MemoScheduler) WaitTaskAwaken(ctx context.Context) (awaken Awaken, err error) {
 	select {
 	case <-ctx.Done():
 		err = ctx.Err()
@@ -110,7 +147,7 @@ func (scheduler *MemoScheduler) WaitTaskSchedule(ctx context.Context) (task *Tas
 		in, ok := scheduler.tasks[taskKey]
 		scheduler.rw.RUnlock()
 		if ok {
-			task = in.GetTask()
+			awaken = in.GetAwaken()
 		}
 	}
 	return
@@ -123,7 +160,8 @@ func (scheduler *MemoScheduler) ReadTask(ctx context.Context, taskKey string) (*
 	if !ok {
 		return nil, nil
 	} else {
-		return in.GetTask(), nil
+		task := in.GetAwaken().Task
+		return &task, nil
 	}
 }
 
@@ -133,24 +171,21 @@ func (scheduler *MemoScheduler) TaskSummery(ctx context.Context) (*Summery, erro
 	count = len(scheduler.tasks)
 	scheduler.rw.RUnlock()
 	return &Summery{
-		StatusCount: map[StatusCode] int64{
-			StatusExecuting: int64(count),
+		StatusCount: map[statusCode] int64{
+			statusExecuting: int64(count),
 		},
 	}, nil
 }
 
-func (scheduler *MemoScheduler) NewExecID(ctx context.Context, taskKey string) (seq int32, err error) {
+func (scheduler *MemoScheduler) NextSeqID(ctx context.Context, taskKey string) (seq int64, err error) {
 	scheduler.rw.RLock()
 	in, ext := scheduler.tasks[taskKey]
 	scheduler.rw.RUnlock()
 	if !ext {
-		return 0, errors.New("task not exists")
+		return 1, nil
 	}
-	t := in.GetTask()
-	if t.Execution != nil {
-		return t.Execution.MainSeq + 1, nil
-	}
-	return 1, nil
+	t := in.GetAwaken().Task
+	return t.Seq + 1, nil
 }
 
 /*var _ ExecutionRepository = (*MemoExecRepository)(nil)
@@ -159,13 +194,13 @@ type MemoExecRepository struct {
 	store       *memo.MemoStore
 	taskIndex   *memo.MemoStore
 	m           sync.RWMutex
-	statusIndex map[StatusCode]int
+	statusIndex map[statusCode]int
 }
 
 func NewMemoRepository() *MemoExecRepository {
 	return &MemoExecRepository{
 		store:       memo.NewMemoStore(time.Hour, 10*time.Minute),
-		statusIndex: map[StatusCode]int{},
+		statusIndex: map[statusCode]int{},
 	}
 }
 
@@ -197,8 +232,8 @@ func (ms *MemoExecRepository) Run(ctx context.Context) error {
 	return ms.store.Run(runCtx)
 }*/
 
-var taskListPool = &sync.Pool{
-	New: func() interface{} {
-		return []string{}
-	},
-}
+//var taskListPool = &sync.Pool{
+//	New: func() interface{} {
+//		return []string{}
+//	},
+//}

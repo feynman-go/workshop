@@ -189,6 +189,10 @@ func (p *Promise) Close() {
 	p.chanStatus.close(nil, nil)
 }
 
+func (p *Promise) IsStarted() bool {
+	return p.chanStatus.isStarted()
+}
+
 func (p *Promise) setNextPromise(buildNext func() *Promise, success bool) *Promise {
 	var ret *Promise
 	ok := p.tryUnStart(func() {

@@ -10,46 +10,35 @@ var ErrOverMaxRetry = errors.New("over max retry")
 var ErrExecuting = errors.New("is executing")
 
 const (
-	StatusWaitingExec     StatusCode = 2
-	StatusExecuting       StatusCode = 3
-	StatusExecuteFinished StatusCode = 4
+	statusUnavailable     statusCode = 1
+	statusWaitingExec     statusCode = 2
+	statusExecuting       statusCode = 3
+	statusExecuteFinished statusCode = 4
 )
 
-type CloseType int
+type statusCode int
 
-const (
-	CloseTypeSuccess     CloseType = 0
-	CloseTypeNoMoreRetry CloseType = 1
-	CloseTypeCanceled    CloseType = 2
-	CloseTypeNotInited   CloseType = 3
-	CloseTypeUnexpect    CloseType = 4
-	CloseTypeNoExecutor  CloseType = 2
-)
-
-type StatusCode int
-
-func (status StatusCode) String() string {
+func (status statusCode) String() string {
 	switch status {
-	case StatusWaitingExec:
+	case statusUnavailable:
+		return "unavailable"
+	case statusWaitingExec:
 		return "waiting exec"
-	case StatusExecuting:
+	case statusExecuting:
 		return "executing"
-	case StatusExecuteFinished:
+	case statusExecuteFinished:
 		return "exec finished"
 	default:
 		return "unknown"
 	}
 }
 
-const (
-	ExecResultTypeUnfinished ResultType = 0
-	ExecResultTypeCancel     ResultType = 1
-	ExecResultTypeErr        ResultType = 2
-	ExecResultTypeTimeOut    ResultType = 3
-	ExecResultTypeSuccess    ResultType = 4
-)
-
-type ResultType int
+type Desc struct {
+	TaskKey  string
+	ExecDesc ExecConfig
+	Tags     []string
+	Overlap  bool
+}
 
 type Schedule struct {
 	AwakenTime time.Time
@@ -58,37 +47,54 @@ type Schedule struct {
 
 type Task struct {
 	Key string        `bson:"_id"`
+	Seq  int64         `bson:"seq"`
 	Schedule Schedule `bson:"schedule"`
 	Info Info `bson:"info"`
-	Execution *Execution `bson:"execution"`
+	Execution Execution `bson:"execution"`
 }
 
-func (task *Task) NewExec(execSeq int32) {
-	task.Execution = &Execution{
-		MainSeq: execSeq,
-		Config: task.Info.ExecConfig,
+func (t *Task) NewExec() {
+	t.Execution = Execution {
+		Available: true,
+		Config: t.Info.ExecConfig,
+		CreateTime: time.Now(),
 	}
 }
 
-func (task Task) Copy() Task {
+/*func (t *Task) Seq(now time.Time) int64 {
+	er := t.Execution
+	switch  {
+	case er.Available:
+		return (int64(t.MainSeq) << 32) | int64(statusUnavailable)
+	case er.WaitingStart(now):
+		return (int64(t.MainSeq) << 32) | int64(statusWaitingExec)
+	case er.Executing(now):
+		return (int64(t.MainSeq) << 32) | int64(statusExecuting)
+	case er.Ended(now):
+		return (int64(t.MainSeq) << 32) | int64(statusExecuteFinished)
+	default:
+		return int64(t.MainSeq) << 32
+	}
+}*/
+
+/*func (task Task) Copy() Task {
 	ret := task
 	if task.Execution != nil {
 		ret.Execution = new(Execution)
 		*ret.Execution = *task.Execution
 	}
 	return ret
-}
-
-
+}*/
 
 type Info struct {
 	Tags       []string   `bson:"tags"`
 	ExecConfig ExecConfig `bson:"execDesc"`
 	CreateTime time.Time `bson:"createTime"`
+	ExecCount int32 `bson:"execCount"`
 }
 
 type Execution struct {
-	MainSeq         int32         `bson:"mainSeq"`
+	Available       bool
 	Config          ExecConfig    `bson:"config"`
 	CreateTime      time.Time     `bson:"createTime,omitempty"`
 	StartTime       time.Time     `bson:"startTime,omitempty"`
@@ -96,18 +102,7 @@ type Execution struct {
 	Result          ExecResult    `bson:"result,omitempty"`
 }
 
-func (er *Execution) Seq(t time.Time) int64 {
-	switch  {
-	case er.WaitingStart(t):
-		return (int64(er.MainSeq) << 32) | int64(StatusWaitingExec)
-	case er.Executing(t):
-		return (int64(er.MainSeq) << 32) | int64(StatusExecuting)
-	case er.Ended(t):
-		return (int64(er.MainSeq) << 32) | int64(StatusExecuteFinished)
-	default:
-		return int64(er.MainSeq) << 32
-	}
-}
+
 
 
 func (er *Execution) Start(t time.Time) {
@@ -160,14 +155,10 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 }
 
 
-type Desc struct {
-	TaskKey  string
-	ExecDesc ExecConfig
-	Tags     []string
-}
 
 type ExecResult struct {
 	ResultInfo string     `bson:"resultInfo"`
+	ResultCode int64      `bson:"resultCode"`
 	NextExec   ExecConfig `bson:"next,omitempty"`
 }
 
@@ -185,7 +176,7 @@ type ExecSummery struct {
 }
 
 type Summery struct {
-	StatusCount map[StatusCode]int64
+	StatusCount map[statusCode]int64
 }
 
 type StatusProfile struct {
@@ -196,6 +187,6 @@ type StatusProfile struct {
 
 type Profile struct {
 	TaskKey    string
-	Status     StatusCode
+	Status     statusCode
 	Executions []Execution
 }
