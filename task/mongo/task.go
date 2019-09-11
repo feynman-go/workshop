@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-type taskData struct {
+type taskDoc struct {
 	Key string        `bson:"_id"`
 	Stage  int64         `bson:"stage"`
 	Schedule task.Schedule `bson:"schedule"`
@@ -24,6 +24,17 @@ type taskData struct {
 	Status task.StatusCode `bson:"status"`
 }
 
+func (td taskDoc) ToTask() task.Task {
+	return task.Task{
+		td.Key,
+		td.Stage,
+		td.Schedule,
+		td.Info,
+		td.Execution,
+	}
+}
+
+var _ task.Scheduler = (*TaskScheduler)(nil)
 
 type TaskScheduler struct {
 	leaders *leader.PartitionLeaders
@@ -32,33 +43,61 @@ type TaskScheduler struct {
 	resumeToken bson.Raw
 	rw sync.RWMutex
 	timers map[string]*timerInfo
-	ch chan taskData
+	ch chan taskDoc
 	pb *prob.Prob
-	timeOut time.Duration
+	hashPartition func(taskKey string) int16
+}
+
+func NewTaskScheduler(database *mongo.Database, col string, hashPartition func(taskKey string) int16) *TaskScheduler {
+	return &TaskScheduler{
+		col: col,
+		timers: map[string]*timerInfo{},
+		ch: make(chan taskDoc),
+		database: database,
+		hashPartition: hashPartition,
+	}
 }
 
 func (ts *TaskScheduler) ScheduleTask(ctx context.Context, tk task.Task, overlap bool) (task.Task, error) {
-	status := tk.Status(time.Now())
-
+	status := tk.Status()
 	sr := ts.database.Collection(ts.col).FindOneAndUpdate(
 		ctx,
 		bson.M{
 			"_id": tk.Key,
-			"stage": bson.M {
-				"$lte": tk.Stage,
-			},
-			"status": bson.M {
-				"$lte": status,
+			"$or": bson.A{
+				bson.M {
+					"stage": bson.M {
+						"$lte": tk.Stage,
+					},
+				},
+				bson.M {
+					"stage": tk.Stage,
+					"status": bson.M {
+						"$lte": tk.Status(),
+					},
+				},
 			},
 		},
 		bson.M{
-			"$set": bson.M{
-				"status": tk.Status(status),
+			"$setOnInsert": bson.M{
+				"_id": tk.Key,
+				"create_time": time.Now(),
+			},
+			"$set": bson.M {
+				"status": status,
+				"stage": tk.Stage,
+				"schedule": tk.Schedule,
+				"info": tk.Info,
+				"execution": tk.Execution,
+				"sortKey": sortKey(0).
+					setPartition(ts.hashPartition(tk.Key)).
+					setUnixMillionSeconds(
+						int64(tk.Schedule.AwakenTime.UnixNano() / int64(time.Millisecond,
+						))),
 			},
 		},
 		options.FindOneAndUpdate().
 			SetUpsert(true).
-			SetMaxTime(ts.timeOut).
 			SetReturnDocument(options.After),
 	)
 
@@ -66,32 +105,54 @@ func (ts *TaskScheduler) ScheduleTask(ctx context.Context, tk task.Task, overlap
 		return task.Task{}, sr.Err()
 	}
 
-	sr.Decode()
+	var td taskDoc
+
+	err := sr.Decode(&td)
+	if err != nil {
+		return task.Task{}, err
+	}
+
+	return td.ToTask(), nil
 }
 
-func (ts *TaskScheduler) CloseTaskSchedule(ctx context.Context, taskKey string) error {
+func (ts *TaskScheduler) CloseTaskSchedule(ctx context.Context, tk task.Task) error {
 	ts.rw.Lock()
-	ti := ts.timers[taskKey]
-	ts.rw.Unlock()
+	ti := ts.timers[tk.Key]
 	if ti != nil {
 		ti.stop()
 	}
-	ts.database.
+	ts.rw.Unlock()
+
+	_, err := ts.database.Collection(ts.col).DeleteOne(ctx, bson.M{
+		"_id": tk.Key,
+		"$or": bson.A{
+			bson.M {
+				"stage": bson.M {
+					"$lte": tk.Stage,
+				},
+			},
+			bson.M {
+				"stage": tk.Stage,
+				"status": bson.M {
+					"$lte": tk.Status(),
+				},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func(ts *TaskScheduler) WaitTaskAwaken(ctx context.Context) (awaken task.Awaken, err error) {
 	select {
 	case <- ctx.Done():
 		err = ctx.Err()
+		return task.Awaken{}, err
 	case td := <- ts.ch:
 		return task.Awaken {
-			Task: task.Task{
-				Key:       td.Key,
-				Stage:     td.Seq,
-				Schedule:  td.Schedule,
-				Info:      td.Info,
-				Execution: td.Execution,
-			},
+			Task: td.ToTask(),
 		}, nil
 	}
 }
@@ -119,11 +180,36 @@ func (ts *TaskScheduler) Close(ctx context.Context) error {
 }
 
 func (ts *TaskScheduler) ReadTask(ctx context.Context, taskKey string) (*task.Task, error) {
+	rs := ts.database.Collection(ts.col).FindOne(ctx, bson.M{
+		"_id": taskKey,
+	})
 
+	if rs.Err() ==  mongo.ErrNoDocuments {
+		return nil, nil
+	}
+
+	if rs.Err() != nil {
+		return nil, rs.Err()
+	}
+	var doc taskDoc
+	err := rs.Decode(&doc)
+	if err != nil {
+		return nil, err
+	}
+
+	t := doc.ToTask()
+	return &t, nil
 }
 
-func (ts *TaskScheduler) NewStageID(ctx context.Context, taskKey string) (seq int64, err error) {
-
+func (ts *TaskScheduler) NewStageID(ctx context.Context, taskKey string) (stageID int64, err error) {
+	r, err := ts.ReadTask(ctx, taskKey)
+	if err != nil {
+		return 0, err
+	}
+	if r == nil {
+		return 1, nil
+	}
+	return r.Stage + 1, nil
 }
 
 func(ts *TaskScheduler) initTasks(ctx context.Context, startKey, endKey sortKey) (lastTime uint32, err error) {
@@ -137,7 +223,7 @@ func(ts *TaskScheduler) initTasks(ctx context.Context, startKey, endKey sortKey)
 	if err != nil {
 		return 0, err
 	}
-	var doc taskData
+	var doc taskDoc
 	for c.Next(ctx) {
 		err = c.Decode(&doc)
 		if err != nil {
@@ -153,6 +239,7 @@ func(ts *TaskScheduler) runPartition(ctx context.Context, pid leader.PartitionID
 	var errChan = make(chan error, 1)
 
 	parallel.RunParallel(ctx, func(ctx context.Context) {
+		// TODO create index
 		var (
 			first bool
 			startKey = sortKey(0).setPartition(int16(pid))
@@ -194,7 +281,7 @@ func(ts *TaskScheduler) runPartition(ctx context.Context, pid leader.PartitionID
 				errChan <- err
 				return
 			}
-			var doc = taskData{}
+			var doc = taskDoc{}
 			for cs.Next(runCtx) {
 				err = cs.Decode(&doc)
 				if err != nil {
@@ -222,7 +309,7 @@ func (ts *TaskScheduler) getResumeToken() bson.Raw{
 	return ts.resumeToken
 }
 
-func (ts *TaskScheduler) updateTask(data taskData) {
+func (ts *TaskScheduler) updateTask(data taskDoc) {
 	ts.rw.Lock()
 	defer ts.rw.Unlock()
 
@@ -252,12 +339,12 @@ func (sk sortKey) getPartition() int16 {
 	return int16((sk & sortKey(0xffff000000000000)) >> 48)
 }
 
-func (sk sortKey) setTime(partition int32) sortKey {
-	return sk | sortKey(partition << 16)
+func (sk sortKey) setUnixMillionSeconds(millionSeconds int64) sortKey {
+	return sk | sortKey(millionSeconds << 4)
 }
 
-func (sk sortKey) getTime() int32 {
-	return int32((sk & sortKey(0xffffffff0000)) >> 16)
+func (sk sortKey) getUnixMillionSeconds() uint64 {
+	return uint64((sk & ^sortKey(0xff)) >> 4)
 }
 
 
@@ -268,7 +355,7 @@ type timerInfo struct {
 	taskKey string
 }
 
-func (info *timerInfo) setTaskAwaken(data taskData, cn chan taskData) {
+func (info *timerInfo) setTaskAwaken(data taskDoc, cn chan taskDoc) {
 	info.rw.Lock()
 	defer info.rw.Unlock()
 

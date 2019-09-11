@@ -31,7 +31,7 @@ type Awaken struct {
 
 type Scheduler interface {
 	ScheduleTask(ctx context.Context, task Task, overlap bool) (Task, error)
-	CloseTaskSchedule(ctx context.Context, taskKey string) error
+	CloseTaskSchedule(ctx context.Context, task Task) error
 	WaitTaskAwaken(ctx context.Context) (awaken Awaken, err error)
 	ReadTask(ctx context.Context, taskKey string) (*Task, error)
 	NewStageID(ctx context.Context, taskKey string) (stageID int64, err error)
@@ -140,8 +140,7 @@ func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecResu
 		return err
 	}
 
-	if t.Stage != task.Stage || t.Status(time.Now()) != statusExecuting { // check version
-		log.Println("ajhsdkahskdkjasjkda")
+	if t.Stage != task.Stage || t.Status() != statusExecuting { // check version
 		return nil
 	}
 
@@ -221,15 +220,15 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	t := time.Now()
 
 	switch  {
-	case exec.ReadyToStart(t):
+	case exec.ReadyToStart():
 		svc.doExec(ctx, task)
-	case exec.WaitingStart(t):
+	case exec.WaitingStart():
 		_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
-	case exec.Executing(t):
+	case exec.Executing():
 		if exec.OverExecTime(t) && task.Info.ExecConfig.RemainExecCount > 0 {
 			err = svc.newTaskExecution(ctx, task)
 		}
-	case exec.Ended(t):
+	case exec.Ended():
 		if exec.CanRetry() {
 			task.Info.ExecConfig = exec.Result.NextExec
 			err = svc.newTaskExecution(ctx, task)
@@ -271,7 +270,7 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 }
 
 func (svc *Manager) closeTask(ctx context.Context, t *Task) {
-	if svc.scheduler.CloseTaskSchedule(ctx, t.Key) == nil {
+	if svc.scheduler.CloseTaskSchedule(ctx, *t) == nil {
 		//TODO close memory
 		runCtx, _ := context.WithTimeout(ctx, svc.maxRedundancy)
 		svc.ps.delete(runCtx, t.Key)
@@ -327,7 +326,6 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 /*func (svc *Manager) Run(ctx context.Context) error {
 	return svc.runScheduler(ctx)
 }*/
-
 
 func (svc *Manager) Close(ctx context.Context) error {
 	parallel.RunParallel(ctx, func(ctx context.Context) {

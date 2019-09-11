@@ -63,14 +63,14 @@ func (t *Task) NewExec(stageID int64) {
 	}
 }
 
-func (t *Task) Status(now time.Time) StatusCode {
+func (t *Task) Status() StatusCode {
 	er := t.Execution
 	switch  {
-	case er.WaitingStart(now):
+	case er.WaitingStart():
 		return statusWaitingExec
-	case er.Executing(now):
+	case er.Executing():
 		return statusExecuting
-	case er.Ended(now):
+	case er.Ended():
 		return statusExecuteFinished
 	case er.Available:
 		return statusUnavailable
@@ -113,32 +113,30 @@ func (er *Execution) End(result ExecResult, t time.Time) {
 	er.EndTime = t
 }
 
-func (er *Execution) ReadyToStart(t time.Time) bool {
-	if er.Executing(t) || er.Ended(t) {
+func (er *Execution) ReadyToStart() bool {
+	if er.Executing() || er.Ended() {
 		return false
 	}
+	t := time.Now()
 	return er.Config.ExpectStartTime.Before(t) || er.Config.ExpectStartTime.Equal(t)
 }
 
-func (er *Execution) WaitingStart(t time.Time) bool {
-	if er.Executing(t) || er.Ended(t) {
+func (er *Execution) WaitingStart() bool {
+	if er.Executing() || er.Ended() {
 		return false
 	}
-	return er.Config.ExpectStartTime.After(t)
+	return er.Config.ExpectStartTime.After(time.Now())
 }
 
-func (er *Execution) Executing(t time.Time) bool {
-	if er.StartTime.IsZero() || er.Ended(t) {
+func (er *Execution) Executing() bool {
+	if er.StartTime.IsZero() || er.Ended() {
 		return false
 	}
-	return er.StartTime.Before(t) || er.StartTime.Equal(t)
+	return true
 }
 
-func (er *Execution) Ended(t time.Time) bool {
-	if er.EndTime.IsZero() {
-		return false
-	}
-	return er.EndTime.Before(t) || er.StartTime.Equal(t)
+func (er *Execution) Ended() bool {
+	return !er.EndTime.IsZero()
 }
 
 func (er *Execution) CanRetry() bool {
@@ -146,7 +144,7 @@ func (er *Execution) CanRetry() bool {
 }
 
 func (er *Execution) OverExecTime(t time.Time) bool {
-	if !er.Executing(t) {
+	if !er.Executing() {
 		return false
 	}
 	lastTime := er.Config.ExpectStartTime.Add(er.Config.MaxExecDuration)

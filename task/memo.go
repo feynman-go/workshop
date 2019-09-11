@@ -20,7 +20,11 @@ func (in *inner) UpdateTask(task Task, overlap bool) (ok bool) {
 	in.rw.Lock()
 	defer in.rw.Unlock()
 
-	if in.task.Stage > task.Stage && !overlap {
+	if in.task.Stage > task.Stage {
+		return false
+	}
+
+	if in.task.Stage == task.Stage && in.task.Status() > task.Status() {
 		return false
 	}
 
@@ -132,17 +136,20 @@ func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time) {
 	in.UpdateTimer(timer)
 }
 
-func (scheduler *MemoScheduler) CloseTaskSchedule(ctx context.Context, taskKey string) error {
+func (scheduler *MemoScheduler) CloseTaskSchedule(ctx context.Context, task Task) error {
 	scheduler.rw.Lock()
 	defer scheduler.rw.Unlock()
 
-	defer delete(scheduler.tasks, taskKey)
+	defer delete(scheduler.tasks, task.Key)
 
-	in, ok := scheduler.tasks[taskKey]
+	in, ok := scheduler.tasks[task.Key]
 	if !ok {
 		return nil
 	}
 
+	if !in.UpdateTask(task, false) {
+		return nil
+	}
 	in.UpdateTimer(nil)
 	return nil
 }
