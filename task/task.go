@@ -43,7 +43,7 @@ type Desc struct {
 
 type Schedule struct {
 	AwakenTime time.Time
-	Priority   int32
+	KeepLive time.Duration
 }
 
 type Task struct {
@@ -96,12 +96,13 @@ type Info struct {
 }
 
 type Execution struct {
-	Available       bool
+	Available       bool          `bson:"available"`
 	Config          ExecConfig    `bson:"config"`
 	CreateTime      time.Time     `bson:"createTime,omitempty"`
 	StartTime       time.Time     `bson:"startTime,omitempty"`
 	EndTime         time.Time     `bson:"endTime,omitempty"`
 	Result          ExecResult    `bson:"result,omitempty"`
+	LastKeepLive    time.Time     `bson:"lastKeepLive,omitempty"`
 }
 
 func (er *Execution) Start(t time.Time) {
@@ -143,6 +144,24 @@ func (er *Execution) CanRetry() bool {
 	return er.Result.NextExec.RemainExecCount > 0
 }
 
+func (er *Execution) IsDead(t time.Time) bool {
+	if !er.Executing() {
+		return false
+	}
+	if er.OverExecTime(t) {
+		return true
+	}
+	// check keep live
+	if er.Config.KeepLive > 0 {
+		if er.LastKeepLive.IsZero() { // no keep live tim
+			return er.StartTime.Add(er.Config.KeepLive).Before(t)
+		} else {
+			return er.LastKeepLive.Add(er.Config.KeepLive).Before(t)
+		}
+	}
+	return false
+}
+
 func (er *Execution) OverExecTime(t time.Time) bool {
 	if !er.Executing() {
 		return false
@@ -150,8 +169,6 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 	lastTime := er.Config.ExpectStartTime.Add(er.Config.MaxExecDuration)
 	return lastTime.Before(t)
 }
-
-
 
 type ExecResult struct {
 	ResultInfo string     `bson:"resultInfo"`
@@ -163,7 +180,7 @@ type ExecConfig struct {
 	ExpectStartTime time.Time     `bson:"expectRetryTime"`
 	MaxExecDuration time.Duration `bson:"maxExecDuration"`
 	RemainExecCount int32         `bson:"remainExec"`
-	Priority        int32         `bson:"priority"`
+	KeepLive        time.Duration `bson:"keepLive"`
 }
 
 type ExecSummery struct {

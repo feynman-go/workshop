@@ -75,11 +75,11 @@ type MemoScheduler struct {
 	awakenDuration time.Duration
 }
 
-func NewMemoScheduler(awakenDuration time.Duration) *MemoScheduler {
+func NewMemoScheduler(defaultKeepLiveDuration time.Duration) *MemoScheduler {
 	return &MemoScheduler{
-		tasks: map[string]*inner{},
-		taskChan: make(chan string, 64),
-		awakenDuration: awakenDuration,
+		tasks:          map[string]*inner{},
+		taskChan:       make(chan string, 64),
+		awakenDuration: defaultKeepLiveDuration,
 	}
 }
 
@@ -114,21 +114,24 @@ func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, task Task, ove
 
 	}
 	scheduler.rw.Unlock()
-	scheduler.schedule(in, awakeTime)
+	scheduler.schedule(in, awakeTime, in.GetAwaken().Task.Schedule.KeepLive)
 	return in.GetAwaken().Task, nil
 }
 
-func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time) {
+func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time, keepLive time.Duration) {
 	taskKey := in.GetAwaken().Task.Key
-	laterAwakeTime := awakeTime.Add(scheduler.awakenDuration)
+	if keepLive == 0 {
+		keepLive = scheduler.awakenDuration
+	}
 
+	laterAwakeTime := awakeTime.Add(keepLive)
 	timer := time.AfterFunc(awakeTime.Sub(time.Now()), func() {
 		scheduler.rw.RLock()
 		in, ext := scheduler.tasks[taskKey]
 		scheduler.rw.RUnlock()
 
 		if ext {
-			scheduler.schedule(in, laterAwakeTime)
+			scheduler.schedule(in, laterAwakeTime, keepLive)
 			scheduler.taskChan <- in.task.Key
 		}
 	})

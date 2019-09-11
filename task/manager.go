@@ -58,6 +58,12 @@ func (cb Context) Callback(ctx context.Context, res ExecResult) error {
 	return err
 }
 
+func (cb Context) KeepLive(ctx context.Context) error {
+	err := cb.manager.KeepLive(ctx, cb.task)
+	return err
+}
+
+
 type Manager struct {
 	//taskSessionTimeOut time.Duration
 	pool               *promise.Pool
@@ -106,7 +112,7 @@ func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) error {
 		},
 		Schedule: Schedule {
 			AwakenTime: desc.ExecDesc.ExpectStartTime,
-			Priority:   desc.ExecDesc.Priority,
+			KeepLive:   desc.ExecDesc.KeepLive,
 		},
 	}
 
@@ -150,12 +156,35 @@ func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecResu
 
 	t.Schedule = Schedule{
 		AwakenTime: time.Now(),
-		Priority:   t.Info.ExecConfig.Priority,
+		KeepLive: task.Execution.Config.KeepLive,
 	}
 
 	_, err = svc.scheduler.ScheduleTask(ctx, *t, false)
 	return err
 }
+
+func (svc *Manager) KeepLive(ctx context.Context, task Task) error {
+	t, err := svc.scheduler.ReadTask(ctx, task.Key)
+	if err != nil {
+		return err
+	}
+
+	if t.Stage != task.Stage || t.Status() != statusExecuting { // check version
+		return nil
+	}
+
+	exec := &t.Execution
+	exec.LastKeepLive = time.Now()
+
+	t.Schedule = Schedule {
+		AwakenTime: time.Now(),
+		KeepLive: task.Execution.Config.KeepLive,
+	}
+
+	_, err = svc.scheduler.ScheduleTask(ctx, *t, false)
+	return err
+}
+
 
 func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) error {
 	maxDuration := task.Info.ExecConfig.MaxExecDuration
@@ -225,7 +254,7 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	case exec.WaitingStart():
 		_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
 	case exec.Executing():
-		if exec.OverExecTime(t) && task.Info.ExecConfig.RemainExecCount > 0 {
+		if exec.IsDead(t) && task.Info.ExecConfig.RemainExecCount > 0 {
 			err = svc.newTaskExecution(ctx, task)
 		}
 	case exec.Ended():
@@ -254,6 +283,7 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 		return
 	}
 
+	// todo to imply
 	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
 		err := svc.executor.StartExecution(Context{
 			Context:   ctx,
