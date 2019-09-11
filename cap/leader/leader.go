@@ -2,7 +2,7 @@ package leader
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/parallel"
+	"github.com/feynman-go/workshop/parallel/prob"
 	"github.com/feynman-go/workshop/task"
 	"log"
 	"math/rand"
@@ -25,17 +25,21 @@ type Member struct {
 	tasks        *task.Manager
 	option       Option
 
-	waitFollowerChan chan struct{}
-	waitLeaderChan   chan struct{}
+	pb *prob.Prob
+	onFollwerChan chan struct{}
+	onLeaderChan  chan struct{}
 }
 
 func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Member {
 	var mb = &Member{
-		elector: elector,
-		electFactory: electFactory,
-		option: option,
-		waitLeaderChan: make(chan struct{}),
+		elector:       elector,
+		electFactory:  electFactory,
+		option:        option,
+		onFollwerChan: make(chan struct{}),
+		onLeaderChan:  make(chan struct{}),
 	}
+
+	close(mb.onFollwerChan)
 
 	mb.tasks = task.NewManager(
 		task.NewMemoScheduler(5 * time.Second),
@@ -48,47 +52,56 @@ func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Me
 	return mb
 }
 
-// block & run no leader
-func (mb *Member) WaitLeader(ctx context.Context, do func(ctx context.Context)) {
-	waitLeader, _ := mb.getWaitChan()
+// block and run do until leader, return if not leader
+func (mb *Member) SyncLeader(ctx context.Context, do func(ctx context.Context)) {
+
 	for {
 		select {
 		case <- ctx.Done():
 			return
-		case <- waitLeader:
-			if !mb.DoAsLeader(ctx, do) {
-				continue
+		default:
+			onLeader, _ := mb.getWaitChan()
+			select {
+			case <- ctx.Done():
+				return
+			case <- onLeader:
+				if mb.DoAsLeader(ctx, do) {
+					return
+				}
 			}
 		}
 	}
 }
 
 func (mb *Member) DoAsLeader(ctx context.Context, do func(ctx context.Context)) bool {
-	_, waitFollower := mb.getWaitChan()
-	if waitFollower == nil {
-		return false
-	}
+	onLeader, onFollower := mb.getWaitChan()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
 		select {
 		case <- runCtx.Done():
-		case <- waitFollower:
+		case <-onFollower:
 			cancel()
 		}
 	}()
-	do(runCtx)
-	return true
+
+	select {
+	case <- runCtx.Done():
+		return false
+	case <- onLeader:
+		do(runCtx)
+		return true
+	}
 }
 
-func (mb *Member) getWaitChan() (waitLeader <- chan struct{}, waitFollower<- chan struct{}) {
+func (mb *Member) getWaitChan() (updateChan <- chan struct{}, waitFollower<- chan struct{}) {
 	mb.rw.RLock()
 	defer mb.rw.RUnlock()
 
-	return mb.waitLeaderChan, mb.waitFollowerChan
+	return mb.onLeaderChan, mb.onFollwerChan
 }
 
-func (mb *Member) FetchInfo() MemberInfo {
+func (mb *Member) GetInfo() MemberInfo {
 	mb.rw.RLock()
 	defer mb.rw.RUnlock()
 	return mb.info
@@ -98,8 +111,8 @@ func (mb *Member) prepareElection(ctx context.Context) (Election, error) {
 	mb.rw.Lock()
 	defer mb.rw.Unlock()
 
-	mInfo := mb.FetchInfo()
-	elect, err := mb.electFactory.FetchElection(ctx, mInfo.Sequence)
+	mInfo := mb.info
+	elect, err := mb.electFactory.NewElection(ctx, mInfo.Sequence)
 	if err != nil {
 		return Election{}, err
 	}
@@ -117,10 +130,14 @@ func (mb *Member) startElect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	err = mb.elector.PostElection(ctx, elect)
-	if err != nil {
-		return err
-	}
+
+	go func() {
+		err = mb.elector.PostElection(ctx, elect)
+		log.Println("PostElection:", elect)
+		if err != nil {
+			log.Println("PostElection err:", err)
+		}
+	}()
 	return nil
 }
 
@@ -136,60 +153,79 @@ func (mb *Member) startKeepLive(ctx context.Context) error {
 
 func (mb *Member) process(ctx context.Context) task.ExecResult {
 	var delta time.Duration
-	if mb.info.IsLeader {
+	info := mb.GetInfo()
+	if info.IsLeader {
 		mb.startKeepLive(ctx)
-		delta = mb.getElectionDuration()
+		delta = mb.getKeepLiveDuration()
+		log.Println("did start keep live next:", time.Now().Add(delta))
 	} else {
 		mb.startElect(ctx)
 		delta = mb.getElectionDuration()
+		log.Println("did start elect next:", time.Now().Add(delta))
 	}
+
 	return task.ExecResult{
 		NextExec: task.ExecConfig {
 			MaxExecDuration: mb.getExecDuration(),
-			RemainExecCount: -1,
+			RemainExecCount: 1000,
 			ExpectStartTime: time.Now().Add(delta),
 		},
 	}
 }
 
 func (mb *Member) getKeepLiveDuration() time.Duration {
-	delta := rand.Int63n(int64(mb.option.MaxKeepLiveDuration - mb.option.MinKeepLiveDuration))
+	delta := int64(mb.option.MaxKeepLiveDuration - mb.option.MinKeepLiveDuration)
+	if delta != 0 {
+		delta = rand.Int63n(delta)
+	}
 	return mb.option.MinKeepLiveDuration + time.Duration(delta)
 }
 
 func (mb *Member) getElectionDuration() time.Duration {
-	delta := rand.Int63n(int64(mb.option.MaxElectDuration - mb.option.MinElectDuration))
+	delta := int64(mb.option.MaxElectDuration - mb.option.MinElectDuration)
+	if delta != 0 {
+		delta = rand.Int63n(delta)
+	}
 	return mb.option.MinElectDuration + time.Duration(delta)
 }
 
 func (mb *Member) getExecDuration() time.Duration {
-	delta := rand.Int63n(int64(mb.option.MaxExecDuration - mb.option.MinExecDuration))
+	delta := int64(mb.option.MaxExecDuration - mb.option.MinElectDuration)
+	if delta != 0 {
+		delta = rand.Int63n(delta)
+	}
 	return mb.option.MinExecDuration + time.Duration(delta)
 }
 
 
 
 func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
+	mb.rw.Lock()
+	defer mb.rw.Unlock()
+
+	log.Println("handleElectionNotify", election, mb.info, mb.info.Sequence > election.Sequence)
+
 	if mb.info.Sequence > election.Sequence {
 		return
 	}
-	if mb.info.Sequence == election.Sequence && mb.info.LeaderID == election.ElectID {
+
+	if mb.info.Sequence == election.Sequence && mb.info.ElectionID == election.ElectID {
 		mb.info.IsLeader = true
-		if mb.waitFollowerChan == nil {
-			mb.waitFollowerChan = make(chan struct{})
-		}
-		if mb.waitLeaderChan != nil {
-			close(mb.waitLeaderChan)
-			mb.waitLeaderChan = nil
+		log.Println("handleElectionNotify select as leader", election)
+
+		select {
+		case <- mb.onLeaderChan:
+		default:
+			close(mb.onLeaderChan)
+			mb.onFollwerChan = make(chan struct{})
 		}
 	} else {
 		mb.info.IsLeader = false
-		if mb.waitFollowerChan != nil {
-			close(mb.waitFollowerChan)
-			mb.waitFollowerChan = nil
-		}
-		if mb.waitLeaderChan == nil {
-			mb.waitLeaderChan = make(chan struct{})
+		select {
+		case <- mb.onFollwerChan:
+		default:
+			close(mb.onFollwerChan)
+			mb.onLeaderChan = make(chan struct{})
 		}
 	}
 	mb.info.Sequence = election.Sequence
@@ -204,7 +240,7 @@ func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 		TaskKey: "process",
 		ExecDesc: task.ExecConfig{
 			ExpectStartTime: expectTime,
-			RemainExecCount: 10,
+			RemainExecCount: 1000,
 		},
 		Overlap: true,
 	})
@@ -214,37 +250,58 @@ func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 	}
 }
 
-func (mb *Member) Run(ctx context.Context) error {
-	var err error
-	parallel.RunParallel(ctx, func(ctx context.Context) {
-		mb.tasks.Run(ctx)
-	}, func(ctx context.Context) {
-		err = mb.tasks.ApplyNewTask(ctx, task.Desc{
-			Overlap: false,
-			TaskKey: "process",
-			ExecDesc: task.ExecConfig{
-				ExpectStartTime: time.Now().Add(mb.getElectionDuration()),
-				MaxExecDuration: mb.getExecDuration(),
-				RemainExecCount: -1,
-			},
-		})
+func (mb *Member) Start() bool {
+	mb.rw.Lock()
+	defer mb.rw.Unlock()
+	if mb.pb != nil {
+		return false
+	} else {
+		mb.pb = prob.New()
+		go prob.SyncRunWithRestart(mb.pb, func(ctx context.Context) bool {
+			expectTime := time.Now().Add(mb.getElectionDuration())
+			err := mb.tasks.ApplyNewTask(ctx, task.Desc{
+				Overlap: false,
+				TaskKey: "process",
+				ExecDesc: task.ExecConfig{
+					ExpectStartTime: expectTime,
+					MaxExecDuration: mb.getExecDuration(),
+					RemainExecCount: 1000,
+				},
+			})
 
-		if err != nil {
-			return
-		}
-
-		for ctx.Err() == nil {
-			runCtx, _ := context.WithTimeout(ctx, time.Second)
-			e, err := mb.elector.WaitElectionNotify(runCtx)
 			if err != nil {
-				err = nil
-				continue
+				return true
 			}
-			mb.handleElectionNotify(ctx, e)
+
+			for ctx.Err() == nil {
+				runCtx, _ := context.WithTimeout(ctx, time.Second)
+				e, err := mb.elector.WaitElectionNotify(runCtx)
+				if err != nil {
+					err = nil
+					continue
+				}
+				mb.handleElectionNotify(ctx, e)
+			}
+			return true
+		}, prob.RandRestart(0, 0))
+		mb.pb.Start()
+		return true
+	}
+}
+
+func (mb *Member) Close(ctx context.Context) error {
+	mb.rw.Lock()
+	defer mb.rw.Unlock()
+	if mb.pb != nil {
+		mb.pb.Close()
+		defer mb.tasks.Close(ctx)
+		select {
+		case <- mb.pb.Closed():
+		case <- ctx.Done():
+			return ctx.Err()
 		}
-		return
-	})
-	return err
+	}
+	return nil
 }
 
 type Option struct {
@@ -274,5 +331,11 @@ type Elector interface {
 }
 
 type ElectionFactory interface {
-	FetchElection(ctx context.Context, sequence int64) (Election, error)
+	NewElection(ctx context.Context, sequence int64) (Election, error)
+}
+
+type ElectionFactoryFunc func (ctx context.Context, sequence int64) (Election, error)
+
+func (fun ElectionFactoryFunc) NewElection(ctx context.Context, sequence int64) (Election, error){
+	return fun(ctx, sequence)
 }

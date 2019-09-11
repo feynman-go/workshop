@@ -2,6 +2,8 @@ package task
 
 import (
 	"context"
+	"github.com/feynman-go/workshop/parallel"
+	"github.com/feynman-go/workshop/parallel/prob"
 	"github.com/feynman-go/workshop/promise"
 	"github.com/pkg/errors"
 	"hash"
@@ -32,7 +34,8 @@ type Scheduler interface {
 	CloseTaskSchedule(ctx context.Context, taskKey string) error
 	WaitTaskAwaken(ctx context.Context) (awaken Awaken, err error)
 	ReadTask(ctx context.Context, taskKey string) (*Task, error)
-	NextSeqID(ctx context.Context, taskKey string) (seq int64, err error)
+	NewStageID(ctx context.Context, taskKey string) (stageID int64, err error)
+	Close(ctx context.Context) error
 }
 
 type Context struct {
@@ -62,11 +65,12 @@ type Manager struct {
 	scheduler          Scheduler
 	maxRedundancy      time.Duration
 	ps 				   *promiseStore
+	pb 				   *prob.Prob
 }
 
 func NewManager(scheduler Scheduler, executor Executor, maxRedundancy time.Duration) *Manager {
 	p := promise.NewPool(8)
-	return &Manager{
+	ret := &Manager{
 		executor:           executor,
 		pool:               p,
 		scheduler:          scheduler,
@@ -75,6 +79,8 @@ func NewManager(scheduler Scheduler, executor Executor, maxRedundancy time.Durat
 			m: &sync.Map{},
 		},
 	}
+	ret.start(context.Background())
+	return ret
 }
 
 func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) error {
@@ -85,14 +91,14 @@ func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) error {
 		desc.ExecDesc.RemainExecCount = 1
 	}
 
-	nextSeq, err := svc.scheduler.NextSeqID(ctx, desc.TaskKey)
+	stageID, err := svc.scheduler.NewStageID(ctx, desc.TaskKey)
 	if err != nil {
 		return err
 	}
 
 	task := Task {
-		Key: desc.TaskKey,
-		Seq: nextSeq,
+		Key:   desc.TaskKey,
+		Stage: stageID,
 		Info: Info{
 			Tags: desc.Tags,
 			ExecConfig: desc.ExecDesc,
@@ -134,7 +140,8 @@ func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecResu
 		return err
 	}
 
-	if t.Seq != task.Seq { // check version
+	if t.Stage != task.Stage || t.Status(time.Now()) != statusExecuting { // check version
+		log.Println("ajhsdkahskdkjasjkda")
 		return nil
 	}
 
@@ -163,8 +170,14 @@ func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) error {
 	}
 
 	task.Schedule.AwakenTime = task.Info.ExecConfig.ExpectStartTime
-	task.NewExec()
-	_, err := svc.scheduler.ScheduleTask(ctx, *task, false)
+
+	stageID, err := svc.scheduler.NewStageID(ctx, task.Key)
+	if err != nil {
+		return err
+	}
+
+	task.NewExec(stageID)
+	_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
 	return err
 }
 
@@ -311,10 +324,37 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (svc *Manager) Run(ctx context.Context) error {
+/*func (svc *Manager) Run(ctx context.Context) error {
 	return svc.runScheduler(ctx)
+}*/
+
+
+func (svc *Manager) Close(ctx context.Context) error {
+	parallel.RunParallel(ctx, func(ctx context.Context) {
+		svc.pb.Close()
+		select {
+		case <- ctx.Done():
+		case <- svc.pb.Closed():
+		}
+	}, func(ctx context.Context) {
+		svc.scheduler.Close(ctx)
+	})
+	return nil
 }
 
+func (svc *Manager) start(ctx context.Context) {
+	pb := prob.New()
+	pb.Start()
+	go prob.SyncRunWithRestart(pb, func(ctx context.Context) bool {
+		err := svc.runScheduler(ctx)
+		if err != nil {
+			log.Println("run scheduler err:", err)
+		}
+		return true
+	}, prob.RandRestart(time.Second, 3 * time.Second))
+	svc.pb = pb
+
+}
 type promiseStore struct {
 	m *sync.Map
 }

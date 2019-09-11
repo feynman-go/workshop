@@ -2,6 +2,7 @@ package memo
 
 import (
 	"context"
+	"github.com/feynman-go/workshop/parallel/prob"
 	"log"
 	"math/rand"
 	"sync"
@@ -11,10 +12,11 @@ import (
 type MemoStore struct {
 	m    *sync.Map
 	pool *sync.Pool
+	pb *prob.Prob
 }
 
 func NewMemoStore(liveDuration time.Duration, liveDelta time.Duration) *MemoStore {
-	return &MemoStore{
+	ret := &MemoStore{
 		m: &sync.Map{},
 		pool: &sync.Pool{
 			New: func() interface{} {
@@ -25,26 +27,45 @@ func NewMemoStore(liveDuration time.Duration, liveDelta time.Duration) *MemoStor
 			},
 		},
 	}
+	ret.start(context.Background())
+	return ret
 }
 
-func (store *MemoStore) Run(ctx context.Context) error {
-	var err error
-	for {
-		err = store.checkDead(ctx)
+func (store *MemoStore) Close(ctx context.Context) error {
+	store.pb.Close()
+	select {
+	case <- ctx.Done():
+		return ctx.Err()
+	case <- store.pb.Closed():
+		return nil
+	}
+}
+
+func (store *MemoStore) start(ctx context.Context) {
+	pb := prob.New()
+	go prob.SyncRunWithRestart(pb, func(ctx context.Context) bool {
+		err := store.checkDead(ctx)
 		if err != nil {
 			log.Println("check memory store err:", err)
+			return true
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			err = ctx.Err()
+			return false
 		}
 		tm := time.NewTimer(10 * time.Second)
 		select {
 		case <-tm.C:
 		case <-ctx.Done():
-			return ctx.Err()
+			err = ctx.Err()
+			return false
 		}
-	}
+		return true
+	}, prob.RandRestart(0, 0))
+	pb.Start()
+	store.pb = pb
 }
+
 
 func (store *MemoStore) checkDead(ctx context.Context) error {
 	var (

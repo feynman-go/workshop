@@ -4,33 +4,33 @@ import (
 	"context"
 	"github.com/feynman-go/workshop/cap/leader"
 	"github.com/feynman-go/workshop/parallel"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 type Elector struct {
-	rw sync.RWMutex
-	key interface{}
-	col string
-	database *mongo.Database
-	docInvalidDuration time.Duration
-	cn chan document
+	rw                  sync.RWMutex
+	key                 interface{}
+	col                 string
+	database            *mongo.Database
+	docTooLaterDuration time.Duration
+	cn                  chan document
 
 	resumeToken bson.Raw
 }
 
-func NewElector(key interface{}, col string, database *mongo.Database, docInvalidDuration time.Duration) *Elector {
+func NewElector(key interface{}, col string, database *mongo.Database, docTooLaterDuration time.Duration) *Elector {
 	return &Elector{
-		key: key,
-		col: col,
-		database: database,
-		docInvalidDuration: docInvalidDuration,
-		cn: make(chan document, 32),
+		key:                 key,
+		col:                 col,
+		database:            database,
+		docTooLaterDuration: docTooLaterDuration,
+		cn:                  make(chan document, 32),
 	}
 }
 
@@ -42,15 +42,17 @@ func (mgo *Elector) PostElection(ctx context.Context, election leader.Election) 
 			"$lt": election.Sequence,
 		},
 	}, bson.M{
-		"lastTime": time.Now(),
-		"seq": election.Sequence,
-		"leader": election.ElectID,
+		"$set": bson.M{
+			"lastTime": primitive.NewDateTimeFromTime(time.Now()),
+			"seq": election.Sequence,
+			"leader": election.ElectID,
+		},
 	}, (&options.UpdateOptions{}).SetUpsert(true))
 
 	if err != nil {
 		return err
 	}
-	if res.MatchedCount == 0 {
+	if res.UpsertedCount == 0 && res.ModifiedCount == 0 {
 		go func() {
 			ctx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
 			err := mgo.fetchAndNotify(ctx, col)
@@ -78,7 +80,7 @@ func (mgo *Elector) KeepLive(ctx context.Context, keepLive leader.KeepLive) erro
 	if err != nil {
 		return err
 	}
-	if res.MatchedCount == 0 {
+	if res.UpsertedCount == 0 && res.ModifiedCount == 0 {
 		go func() {
 			ctx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
 			err := mgo.fetchAndNotify(ctx, col)
@@ -125,72 +127,89 @@ func (mgo *Elector) getResumeToken() bson.Raw{
 }
 
 
-func (mgo *Elector) WaitElectionNotify(ctx context.Context) (*leader.Election, error) {
+func (mgo *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, error) {
 
-	var electValue = &atomic.Value{}
-	var errValue = &atomic.Value{}
-	var errChan = make(chan error)
+	var election leader.Election
+	var streamErr error
 
 	parallel.RunParallel(ctx, func(ctx context.Context) {
 		for ctx.Err() == nil {
+			log.Println("1111111111")
 			runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
-			pipeline := bson.A{bson.M{"$match": bson.M{"_id": mgo.key}}}
+			//pipeline := mongo.Pipeline{bson.D{{"$match", bson.M{"_id": mgo.key}}}}
 
-			cs, err := mgo.database.Collection(mgo.col).Watch(runCtx, pipeline,
+			log.Println("2222222222")
+			cs, err := mgo.database.Collection(mgo.col).Watch(runCtx, mongo.Pipeline{},
 				options.ChangeStream().SetFullDocument(options.UpdateLookup),
-				options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
-				options.ChangeStream().SetResumeAfter(mgo.getResumeToken()),
+				//options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
+				//options.ChangeStream().SetResumeAfter(mgo.getResumeToken()),
 			)
+
+			log.Println("3333333333")
 			if err != nil {
+				log.Println("watch connection err:", err)
+				timer := time.NewTimer(2 * time.Second)
+				select {
+				case <- timer.C:
+				case <- ctx.Done():
+					return
+				}
 				continue
 			}
 
 			var doc = document{}
 			for cs.Next(runCtx) {
 				err = cs.Decode(&doc)
+				log.Println("555555555555", doc)
 				if err != nil {
 					cs.Close(ctx)
-					errChan <- err
+					streamErr = err
 					return
 				}
-
-				if doc.LastTime.Add(mgo.docInvalidDuration).Before(time.Now()) {
+				lastTime := doc.FullDocument.LastTime
+				if lastTime.Add(mgo.docTooLaterDuration).Before(time.Now()) {
 					continue
 				}
 
 				mgo.cn <- doc
 				mgo.setResumeToken(cs.ResumeToken())
 			}
-			cs.Close(runCtx)
+
+
+			err = cs.Err()
+			if err == nil || err == mongo.ErrNilCursor || err == context.Canceled || err == context.DeadlineExceeded {
+				cs.Close(runCtx)
+				continue
+			} else {
+				cs.Close(runCtx)
+				streamErr = err
+				return
+			}
 		}
 	}, func(ctx context.Context) {
 		select {
 		case <- ctx.Done():
 			return
-		case err := <- errChan:
-			errValue.Store(err)
-			return
 		case doc := <- mgo.cn:
-			electValue.Store(leader.Election{
-				Sequence: doc.Sequence,
-				ElectID:  doc.LeaderID,
-			})
+			election = leader.Election{
+				Sequence: doc.FullDocument.Sequence,
+				ElectID:  doc.FullDocument.LeaderID,
+			}
 		}
 	})
 
-	vElec := electValue.Load()
-	vErr := errValue.Load()
-	if vElec != nil {
-		return nil, vErr.(error)
+	if streamErr != nil {
+		return leader.Election{}, streamErr
 	}
 
-	elect := vElec.(*leader.Election)
-	return elect, nil
+	return election, nil
 }
 
 type document struct {
-	ID string `bson:"_id"`
-	LeaderID string `bson:"leader"`
-	Sequence int64 `bson:"seq"`
-	LastTime time.Time `bson:"lastTime,omitempty"`
+	FullDocument struct {
+		ID interface{} `bson:"_id"`
+		LeaderID string `bson:"leader"`
+		Sequence int64 `bson:"seq"`
+		LastTime time.Time `bson:"lastTime,omitempty"`
+	} `bson:"fullDocument"`
 }

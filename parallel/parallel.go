@@ -8,7 +8,13 @@ import (
 	"time"
 )
 
-func RunParallel(ctx context.Context, runner ...func(ctx context.Context) ) {
+type RunInfo struct {
+	Started bool
+	End bool
+	RetErr error
+}
+
+func RunParallel(ctx context.Context, runner ...func(ctx context.Context)) {
 	var cancel func()
 	ctx, cancel = context.WithCancel(ctx)
 
@@ -30,6 +36,19 @@ func RunParallel(ctx context.Context, runner ...func(ctx context.Context) ) {
 
 	startGroup.Wait()
 	endGroup.Wait()
+}
+
+func RunByContext(ctx context.Context, runner ...func(ctx context.Context) ) {
+	rt := NewRoot()
+	for i := range runner {
+		r := runner[i]
+		rt.Fork(func(ctx context.Context) bool {
+			r(ctx)
+			return false
+		})
+	}
+	rt.Start()
+	<- rt.Closed()
 }
 
 type status int32
@@ -167,7 +186,7 @@ func (runner *Runner) start() error {
 	if !runner.started {
 		runner.started = true
 		go runner.runDaemon(context.Background())
-		go prob.Run(runner.prob, runner.run)
+		go prob.SyncRun(runner.prob, runner.run)
 	} else {
 		return errors.New("started")
 	}

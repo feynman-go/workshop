@@ -10,15 +10,16 @@ var ErrOverMaxRetry = errors.New("over max retry")
 var ErrExecuting = errors.New("is executing")
 
 const (
-	statusUnavailable     statusCode = 1
-	statusWaitingExec     statusCode = 2
-	statusExecuting       statusCode = 3
-	statusExecuteFinished statusCode = 4
+	statusUnknown     StatusCode = 0
+	statusUnavailable     StatusCode = 1
+	statusWaitingExec     StatusCode = 2
+	statusExecuting       StatusCode = 3
+	statusExecuteFinished StatusCode = 4
 )
 
-type statusCode int
+type StatusCode int
 
-func (status statusCode) String() string {
+func (status StatusCode) String() string {
 	switch status {
 	case statusUnavailable:
 		return "unavailable"
@@ -46,14 +47,15 @@ type Schedule struct {
 }
 
 type Task struct {
-	Key string        `bson:"_id"`
-	Seq  int64         `bson:"seq"`
-	Schedule Schedule `bson:"schedule"`
-	Info Info `bson:"info"`
+	Key       string    `bson:"_id"`
+	Stage     int64     `bson:"stage"`
+	Schedule  Schedule  `bson:"schedule"`
+	Info      Info      `bson:"info"`
 	Execution Execution `bson:"execution"`
 }
 
-func (t *Task) NewExec() {
+func (t *Task) NewExec(stageID int64) {
+	t.Stage = stageID
 	t.Execution = Execution {
 		Available: true,
 		Config: t.Info.ExecConfig,
@@ -61,21 +63,21 @@ func (t *Task) NewExec() {
 	}
 }
 
-/*func (t *Task) Seq(now time.Time) int64 {
+func (t *Task) Status(now time.Time) StatusCode {
 	er := t.Execution
 	switch  {
-	case er.Available:
-		return (int64(t.MainSeq) << 32) | int64(statusUnavailable)
 	case er.WaitingStart(now):
-		return (int64(t.MainSeq) << 32) | int64(statusWaitingExec)
+		return statusWaitingExec
 	case er.Executing(now):
-		return (int64(t.MainSeq) << 32) | int64(statusExecuting)
+		return statusExecuting
 	case er.Ended(now):
-		return (int64(t.MainSeq) << 32) | int64(statusExecuteFinished)
+		return statusExecuteFinished
+	case er.Available:
+		return statusUnavailable
 	default:
-		return int64(t.MainSeq) << 32
+		return statusUnknown
 	}
-}*/
+}
 
 /*func (task Task) Copy() Task {
 	ret := task
@@ -101,9 +103,6 @@ type Execution struct {
 	EndTime         time.Time     `bson:"endTime,omitempty"`
 	Result          ExecResult    `bson:"result,omitempty"`
 }
-
-
-
 
 func (er *Execution) Start(t time.Time) {
 	er.StartTime = t
@@ -176,7 +175,7 @@ type ExecSummery struct {
 }
 
 type Summery struct {
-	StatusCount map[statusCode]int64
+	StatusCount map[StatusCode]int64
 }
 
 type StatusProfile struct {
@@ -187,6 +186,6 @@ type StatusProfile struct {
 
 type Profile struct {
 	TaskKey    string
-	Status     statusCode
+	Status     StatusCode
 	Executions []Execution
 }

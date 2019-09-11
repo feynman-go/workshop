@@ -2,6 +2,7 @@ package prob
 
 import (
 	"context"
+	"github.com/feynman-go/workshop/randtime"
 	"sync"
 	"time"
 )
@@ -54,8 +55,6 @@ func (prob *Prob) didRunning(cancel func()) {
 
 	prob.running = true
 	prob.cancel = cancel
-
-
 }
 
 func (prob *Prob) didStopped() {
@@ -123,7 +122,7 @@ func (prob *Prob) Running() bool {
 	return prob.running
 }
 
-func Run(prob *Prob, runFunc func(ctx context.Context)) {
+func SyncRun(prob *Prob, runFunc func(ctx context.Context)) {
 	tk := time.NewTicker(time.Second)
 	for {
 
@@ -145,5 +144,29 @@ func Run(prob *Prob, runFunc func(ctx context.Context)) {
 			runFunc(runCtx)
 			prob.didStopped()
 		}
+	}
+}
+
+func SyncRunWithRestart(prob *Prob, runFunc func(ctx context.Context) (canRestart bool), restartWait func() time.Duration) {
+	SyncRun(prob, func(ctx context.Context) {
+		for ctx.Err() == nil {
+			if !runFunc(ctx) {
+				return
+			}
+			wait := restartWait()
+			if wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <- ctx.Done():
+				case <- timer.C:
+				}
+			}
+		}
+	})
+}
+
+func RandRestart(min, max time.Duration) func() time.Duration {
+	return func() time.Duration {
+		return randtime.RandDuration(min, max)
 	}
 }

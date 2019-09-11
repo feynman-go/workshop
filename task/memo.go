@@ -20,7 +20,7 @@ func (in *inner) UpdateTask(task Task, overlap bool) (ok bool) {
 	in.rw.Lock()
 	defer in.rw.Unlock()
 
-	if in.task.Seq > task.Seq && !overlap {
+	if in.task.Stage > task.Stage && !overlap {
 		return false
 	}
 
@@ -31,7 +31,7 @@ func (in *inner) UpdateTask(task Task, overlap bool) (ok bool) {
 	}
 
 	in.task = task
-	in.task.Seq ++
+	in.task.Stage++
 	if in.timer != nil {
 		in.timer.Stop()
 		in.timer = nil
@@ -77,6 +77,15 @@ func NewMemoScheduler(awakenDuration time.Duration) *MemoScheduler {
 		taskChan: make(chan string, 64),
 		awakenDuration: awakenDuration,
 	}
+}
+
+func (scheduler *MemoScheduler) Close(ctx context.Context) error {
+	scheduler.rw.RLock()
+	defer scheduler.rw.RUnlock()
+	for _, t := range scheduler.tasks {
+		t.UpdateTimer(nil)
+	}
+	return nil
 }
 
 func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, task Task, overlap bool) (Task, error) {
@@ -171,13 +180,13 @@ func (scheduler *MemoScheduler) TaskSummery(ctx context.Context) (*Summery, erro
 	count = len(scheduler.tasks)
 	scheduler.rw.RUnlock()
 	return &Summery{
-		StatusCount: map[statusCode] int64{
+		StatusCount: map[StatusCode] int64{
 			statusExecuting: int64(count),
 		},
 	}, nil
 }
 
-func (scheduler *MemoScheduler) NextSeqID(ctx context.Context, taskKey string) (seq int64, err error) {
+func (scheduler *MemoScheduler) NewStageID(ctx context.Context, taskKey string) (seq int64, err error) {
 	scheduler.rw.RLock()
 	in, ext := scheduler.tasks[taskKey]
 	scheduler.rw.RUnlock()
@@ -185,7 +194,7 @@ func (scheduler *MemoScheduler) NextSeqID(ctx context.Context, taskKey string) (
 		return 1, nil
 	}
 	t := in.GetAwaken().Task
-	return t.Seq + 1, nil
+	return t.Stage + 1, nil
 }
 
 /*var _ ExecutionRepository = (*MemoExecRepository)(nil)
@@ -194,13 +203,13 @@ type MemoExecRepository struct {
 	store       *memo.MemoStore
 	taskIndex   *memo.MemoStore
 	m           sync.RWMutex
-	statusIndex map[statusCode]int
+	statusIndex map[StatusCode]int
 }
 
 func NewMemoRepository() *MemoExecRepository {
 	return &MemoExecRepository{
 		store:       memo.NewMemoStore(time.Hour, 10*time.Minute),
-		statusIndex: map[statusCode]int{},
+		statusIndex: map[StatusCode]int{},
 	}
 }
 

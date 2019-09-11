@@ -12,7 +12,7 @@ func TestProbRunAndStop(t *testing.T) {
 
 	var status int32
 
-	go Run(prob, func(ctx context.Context) {
+	go SyncRun(prob, func(ctx context.Context) {
 		atomic.StoreInt32(&status, 1)
 		<- ctx.Done()
 		atomic.StoreInt32(&status, 2)
@@ -44,7 +44,7 @@ func TestProbRunAndClose(t *testing.T) {
 
 	var status int32
 
-	go Run(prob, func(ctx context.Context) {
+	go SyncRun(prob, func(ctx context.Context) {
 		atomic.StoreInt32(&status, 1)
 		<- ctx.Done()
 		atomic.StoreInt32(&status, 2)
@@ -80,7 +80,7 @@ func TestProbRunMulti(t *testing.T) {
 
 	var status int32
 
-	go Run(prob, func(ctx context.Context) {
+	go SyncRun(prob, func(ctx context.Context) {
 		atomic.StoreInt32(&status, 1)
 		<- ctx.Done()
 		atomic.StoreInt32(&status, 2)

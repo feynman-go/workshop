@@ -2,9 +2,6 @@ package task
 
 import (
 	"context"
-	"log"
-	"net/http"
-	_ "net/http/pprof"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,10 +9,9 @@ import (
 )
 
 func TestManagerBasic(t *testing.T) {
-
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
+	//go func() {
+	//	log.Println(http.ListenAndServe("localhost:6060", nil))
+	//}()
 
 	sch := NewMemoScheduler(10 * time.Second)
 
@@ -27,13 +23,6 @@ func TestManagerBasic(t *testing.T) {
 			ResultInfo:     "",
 		})
 	}), 2 * time.Second)
-
-	go func() {
-		err := manager.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
@@ -79,13 +68,6 @@ func TestManagerExpectTime(t *testing.T) {
 			ResultInfo:     "",
 		})
 	}), 2 * time.Second)
-
-	go func() {
-		err := manager.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
@@ -155,13 +137,6 @@ func TestTaskRetry(t *testing.T) {
 		})
 	}), 2 * time.Second)
 
-	go func() {
-		err := manager.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
-
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
 		ExecDesc: ExecConfig{
@@ -198,13 +173,6 @@ func TestRepeatTask(t *testing.T) {
 			ResultInfo: "",
 		})
 	}), 2 * time.Second)
-
-	go func() {
-		err := manager.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
 
 	for i := 0 ; i < 3 ; i++{
 		err := manager.ApplyNewTask(context.Background(), Desc{
@@ -253,13 +221,6 @@ func TestOverLap(t *testing.T) {
 			ResultInfo: "",
 		})
 	}), 2 * time.Second)
-
-	go func() {
-		err := manager.Run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
 
 	err := manager.ApplyNewTask(context.Background(), Desc{
 		TaskKey: "1",
