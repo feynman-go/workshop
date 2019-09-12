@@ -34,16 +34,16 @@ func (status StatusCode) String() string {
 	}
 }
 
-type Desc struct {
-	TaskKey  string
-	ExecDesc ExecConfig
-	Tags     []string
-	Overlap  bool
-}
+//type Desc struct {
+//	TaskKey  string
+//	ExecDesc ExecOption
+//	Tags     []string
+//	Overlap  bool
+//}
 
 type Schedule struct {
-	AwakenTime time.Time
-	KeepLive time.Duration
+	AwakenTime         time.Time
+	CompensateDuration time.Duration
 }
 
 type Task struct {
@@ -54,11 +54,11 @@ type Task struct {
 	Execution Execution `bson:"execution"`
 }
 
-func (t *Task) NewExec(stageID int64) {
+func (t *Task) NewExec(stageID int64, option ExecOption) {
 	t.Stage = stageID
 	t.Execution = Execution {
 		Available: true,
-		Config: t.Info.ExecConfig,
+		Config: option,
 		CreateTime: time.Now(),
 	}
 }
@@ -90,19 +90,27 @@ func (t *Task) Status() StatusCode {
 
 type Info struct {
 	Tags       []string   `bson:"tags"`
-	ExecConfig ExecConfig `bson:"execDesc"`
-	CreateTime time.Time `bson:"createTime"`
-	ExecCount int32 `bson:"execCount"`
+	ExecOption ExecOption `bson:"execDesc"`
+	CreateTime time.Time  `bson:"createTime"`
+	StartCount int32      `bson:"restartCount"`
+	ExecCount  int32      `bson:"execCount"`
+}
+
+func (info Info) CanRestart() bool {
+	if info.ExecOption.MaxRestart == nil {
+		return false
+	}
+	return info.StartCount < *info.ExecOption.MaxRestart
 }
 
 type Execution struct {
-	Available       bool          `bson:"available"`
-	Config          ExecConfig    `bson:"config"`
-	CreateTime      time.Time     `bson:"createTime,omitempty"`
-	StartTime       time.Time     `bson:"startTime,omitempty"`
-	EndTime         time.Time     `bson:"endTime,omitempty"`
-	Result          ExecResult    `bson:"result,omitempty"`
-	LastKeepLive    time.Time     `bson:"lastKeepLive,omitempty"`
+	Available    bool       `bson:"available"`
+	Config       ExecOption `bson:"config"`
+	CreateTime   time.Time  `bson:"createTime,omitempty"`
+	StartTime    time.Time  `bson:"startTime,omitempty"`
+	EndTime      time.Time  `bson:"endTime,omitempty"`
+	Result       ExecResult `bson:"result,omitempty"`
+	LastKeepLive time.Time  `bson:"lastKeepLive,omitempty"`
 }
 
 func (er *Execution) Start(t time.Time) {
@@ -119,14 +127,15 @@ func (er *Execution) ReadyToStart() bool {
 		return false
 	}
 	t := time.Now()
-	return er.Config.ExpectStartTime.Before(t) || er.Config.ExpectStartTime.Equal(t)
+	expect := er.Config.GetExpectTime()
+	return expect.Before(t) || expect.Equal(t)
 }
 
 func (er *Execution) WaitingStart() bool {
 	if er.Executing() || er.Ended() {
 		return false
 	}
-	return er.Config.ExpectStartTime.After(time.Now())
+	return er.Config.GetExpectTime().After(time.Now())
 }
 
 func (er *Execution) Executing() bool {
@@ -140,23 +149,21 @@ func (er *Execution) Ended() bool {
 	return !er.EndTime.IsZero()
 }
 
-func (er *Execution) CanRetry() bool {
-	return er.Result.NextExec.RemainExecCount > 0
-}
-
 func (er *Execution) IsDead(t time.Time) bool {
 	if !er.Executing() {
 		return false
 	}
-	if er.OverExecTime(t) {
-		return true
-	}
 	// check keep live
-	if er.Config.KeepLive > 0 {
+	var compensateDuration time.Duration
+	if er.Config.CompensateDuration != nil {
+		compensateDuration = *er.Config.CompensateDuration
+	}
+
+	if compensateDuration > 0 {
 		if er.LastKeepLive.IsZero() { // no keep live tim
-			return er.StartTime.Add(er.Config.KeepLive).Before(t)
+			return er.StartTime.Add(compensateDuration * 2).Before(t)
 		} else {
-			return er.LastKeepLive.Add(er.Config.KeepLive).Before(t)
+			return er.LastKeepLive.Add(compensateDuration * 2).Before(t)
 		}
 	}
 	return false
@@ -166,21 +173,25 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 	if !er.Executing() {
 		return false
 	}
-	lastTime := er.Config.ExpectStartTime.Add(er.Config.MaxExecDuration)
+	var maxExecDuration time.Duration
+	if er.Config.MaxExecDuration != nil {
+		maxExecDuration = *er.Config.MaxExecDuration
+	}
+
+	startTime := er.Config.GetExpectTime()
+	if startTime.IsZero() {
+		startTime = er.StartTime
+	}
+
+	lastTime := startTime.Add(maxExecDuration)
 	return lastTime.Before(t)
 }
 
 type ExecResult struct {
 	ResultInfo string     `bson:"resultInfo"`
 	ResultCode int64      `bson:"resultCode"`
-	NextExec   ExecConfig `bson:"next,omitempty"`
-}
-
-type ExecConfig struct {
-	ExpectStartTime time.Time     `bson:"expectRetryTime"`
-	MaxExecDuration time.Duration `bson:"maxExecDuration"`
-	RemainExecCount int32         `bson:"remainExec"`
-	KeepLive        time.Duration `bson:"keepLive"`
+	Continue   bool       `bson:"continue"`
+	NextExec   ExecOption `bson:"next,omitempty"`
 }
 
 type ExecSummery struct {

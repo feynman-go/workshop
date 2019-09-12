@@ -29,7 +29,7 @@ func (pl *PartitionLeaders) SyncLeader(ctx context.Context, partitionLeaded func
 		rs = append(rs, func(ctx context.Context) {
 			for ctx.Err() == nil {
 				m.SyncLeader(ctx, func(ctx context.Context) {
-					partitionLeaded(k, ctx)
+					partitionLeaded(ctx, k)
 				})
 			}
 		})

@@ -134,20 +134,16 @@ func (mgo *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, er
 
 	parallel.RunParallel(ctx, func(ctx context.Context) {
 		for ctx.Err() == nil {
-			log.Println("1111111111")
 			runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
-			//pipeline := mongo.Pipeline{bson.D{{"$match", bson.M{"_id": mgo.key}}}}
+			pipeline := mongo.Pipeline{bson.D{{"$match", bson.M{"_id": mgo.key}}}}
 
-			log.Println("2222222222")
-			cs, err := mgo.database.Collection(mgo.col).Watch(runCtx, mongo.Pipeline{},
+			cs, err := mgo.database.Collection(mgo.col).Watch(runCtx, pipeline,
 				options.ChangeStream().SetFullDocument(options.UpdateLookup),
 				//options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
 				//options.ChangeStream().SetResumeAfter(mgo.getResumeToken()),
 			)
 
-			log.Println("3333333333")
 			if err != nil {
-				log.Println("watch connection err:", err)
 				timer := time.NewTimer(2 * time.Second)
 				select {
 				case <- timer.C:
@@ -160,7 +156,6 @@ func (mgo *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, er
 			var doc = document{}
 			for cs.Next(runCtx) {
 				err = cs.Decode(&doc)
-				log.Println("555555555555", doc)
 				if err != nil {
 					cs.Close(ctx)
 					streamErr = err

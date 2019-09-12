@@ -47,12 +47,12 @@ func TestLeaderToFollower(t *testing.T) {
 			ElectID: "electID1",
 		}, nil
 	}), Option{
-		MaxElectDuration: time.Second,
-		MinElectDuration: time.Second,
-		MaxKeepLiveDuration: 3 * time.Second,
-		MinKeepLiveDuration: 3 * time.Second,
-		MaxExecDuration: 3 * time.Second,
-		MinExecDuration: 3 * time.Second,
+		MaxElectDuration: 3 * time.Second,
+		MinElectDuration: 3 * time.Second,
+		MaxKeepLiveDuration: 5 * time.Second,
+		MinKeepLiveDuration: 5 * time.Second,
+		MaxExecDuration: 5 * time.Second,
+		MinExecDuration: 5 * time.Second,
 	})
 
 	member2 := NewMember(elector, ElectionFactoryFunc(func (ctx context.Context, sequence int64) (Election, error) {

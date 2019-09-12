@@ -47,7 +47,7 @@ func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Me
 			res := mb.process(cb)
 			return cb.Callback(cb, res)
 		}),
-		time.Second,
+		task.DefaultManagerOption(),
 	)
 	return mb
 }
@@ -165,11 +165,10 @@ func (mb *Member) process(ctx context.Context) task.ExecResult {
 	}
 
 	return task.ExecResult{
-		NextExec: task.ExecConfig {
-			MaxExecDuration: mb.getExecDuration(),
-			RemainExecCount: 1000,
-			ExpectStartTime: time.Now().Add(delta),
-		},
+		NextExec: task.ExecOption{}.
+			SetExpectStartTime(time.Now().Add(delta)).
+			SetMaxExecDuration(mb.getElectionDuration()).
+			SetMaxRetryCount(0),
 	}
 }
 
@@ -236,17 +235,13 @@ func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 		expectTime = time.Now().Add(mb.getKeepLiveDuration())
 	}
 
-	err := mb.tasks.ApplyNewTask(ctx, task.Desc{
-		TaskKey: "process",
-		ExecDesc: task.ExecConfig{
-			ExpectStartTime: expectTime,
-			RemainExecCount: 1000,
-		},
-		Overlap: true,
-	})
-
+	err := mb.tasks.ApplyNewTask(ctx, "process",
+		task.Option{}.
+		SetExpectStartTime(expectTime).
+			SetMaxRestartCount(0),
+	)
 	if err != nil {
-		log.Println("apply new task err")
+		log.Println("apply new task err", err)
 	}
 }
 
@@ -259,15 +254,14 @@ func (mb *Member) Start() bool {
 		mb.pb = prob.New()
 		go prob.SyncRunWithRestart(mb.pb, func(ctx context.Context) bool {
 			expectTime := time.Now().Add(mb.getElectionDuration())
-			err := mb.tasks.ApplyNewTask(ctx, task.Desc{
-				Overlap: false,
-				TaskKey: "process",
-				ExecDesc: task.ExecConfig{
-					ExpectStartTime: expectTime,
-					MaxExecDuration: mb.getExecDuration(),
-					RemainExecCount: 1000,
-				},
-			})
+			err := mb.tasks.ApplyNewTask(
+				ctx,
+				"process",
+				task.Option{}.
+				SetExpectStartTime(expectTime).
+				SetMaxExecDuration(mb.getExecDuration()).
+				SetMaxRestartCount(0),
+			)
 
 			if err != nil {
 				return true

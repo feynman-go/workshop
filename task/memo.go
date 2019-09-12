@@ -69,17 +69,17 @@ func (in *inner) GetAwaken() Awaken {
 }
 
 type MemoScheduler struct {
-	rw sync.RWMutex
-	tasks map[string]*inner
-	taskChan chan string
-	awakenDuration time.Duration
+	rw                      sync.RWMutex
+	tasks                   map[string]*inner
+	taskChan                chan string
+	defaultKeepLiveDuration time.Duration
 }
 
 func NewMemoScheduler(defaultKeepLiveDuration time.Duration) *MemoScheduler {
 	return &MemoScheduler{
-		tasks:          map[string]*inner{},
-		taskChan:       make(chan string, 64),
-		awakenDuration: defaultKeepLiveDuration,
+		tasks:                   map[string]*inner{},
+		taskChan:                make(chan string, 64),
+		defaultKeepLiveDuration: defaultKeepLiveDuration,
 	}
 }
 
@@ -114,17 +114,21 @@ func (scheduler *MemoScheduler) ScheduleTask(ctx context.Context, task Task, ove
 
 	}
 	scheduler.rw.Unlock()
-	scheduler.schedule(in, awakeTime, in.GetAwaken().Task.Schedule.KeepLive)
+	scheduler.schedule(in, awakeTime, in.GetAwaken().Task.Schedule.CompensateDuration)
 	return in.GetAwaken().Task, nil
 }
 
 func (scheduler *MemoScheduler) schedule(in *inner, awakeTime time.Time, keepLive time.Duration) {
 	taskKey := in.GetAwaken().Task.Key
 	if keepLive == 0 {
-		keepLive = scheduler.awakenDuration
+		keepLive = scheduler.defaultKeepLiveDuration
 	}
 
 	laterAwakeTime := awakeTime.Add(keepLive)
+	if keepLive == 0 {
+		laterAwakeTime = awakeTime.Add(scheduler.defaultKeepLiveDuration)
+	}
+
 	timer := time.AfterFunc(awakeTime.Sub(time.Now()), func() {
 		scheduler.rw.RLock()
 		in, ext := scheduler.tasks[taskKey]

@@ -9,7 +9,6 @@ import (
 	"hash"
 	"hash/crc32"
 	"log"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -42,11 +41,6 @@ type Context struct {
 	context.Context
 	manager   *Manager
 	task    Task
-	execCount int32
-}
-
-func (cb Context) ExecCount() int32 {
-	return cb.execCount
 }
 
 func (cb Context) Task() Task {
@@ -65,22 +59,22 @@ func (cb Context) KeepLive(ctx context.Context) error {
 
 
 type Manager struct {
-	//taskSessionTimeOut time.Duration
-	pool               *promise.Pool
-	executor           Executor
-	scheduler          Scheduler
-	maxRedundancy      time.Duration
-	ps 				   *promiseStore
-	pb 				   *prob.Prob
+	pool      *promise.Pool
+	executor  Executor
+	scheduler Scheduler
+	ps        *promiseStore
+	pb        *prob.Prob
+	option    ManagerOption
 }
 
-func NewManager(scheduler Scheduler, executor Executor, maxRedundancy time.Duration) *Manager {
-	p := promise.NewPool(8)
+func NewManager(scheduler Scheduler, executor Executor, opt ManagerOption) *Manager {
+	opt = opt.CompleteWith(DefaultManagerOption())
+	p := promise.NewPool(opt.MaxBusterTask)
 	ret := &Manager{
 		executor:           executor,
 		pool:               p,
 		scheduler:          scheduler,
-		maxRedundancy:      maxRedundancy,
+		option: opt,
 		ps: &promiseStore {
 			m: &sync.Map{},
 		},
@@ -89,34 +83,45 @@ func NewManager(scheduler Scheduler, executor Executor, maxRedundancy time.Durat
 	return ret
 }
 
-func (svc *Manager) ApplyNewTask(ctx context.Context, desc Desc) error {
-	if desc.TaskKey == "" {
+func (svc *Manager) ApplyNewTask(ctx context.Context, taskKey string, option ...Option) error {
+	if taskKey == "" {
 		return errors.New("empty task key")
 	}
-	if desc.ExecDesc.RemainExecCount <= 0 {
-		desc.ExecDesc.RemainExecCount = 1
+
+	opt := svc.option.Option()
+	for _, o := range option {
+		opt = opt.Merge(o)
 	}
 
-	stageID, err := svc.scheduler.NewStageID(ctx, desc.TaskKey)
+	stageID, err := svc.scheduler.NewStageID(ctx, taskKey)
 	if err != nil {
 		return err
 	}
 
+	var (
+		execOption = opt.Exec
+		tags []string
+		overlap bool
+	)
+
+	if opt.Tags != nil {
+		tags = *opt.Tags
+	}
+	if opt.Overlap != nil {
+		overlap = *opt.Overlap
+	}
 	task := Task {
-		Key:   desc.TaskKey,
+		Key:   taskKey,
 		Stage: stageID,
 		Info: Info{
-			Tags: desc.Tags,
-			ExecConfig: desc.ExecDesc,
+			Tags:       tags,
+			ExecOption: execOption,
 			CreateTime: time.Now(),
 		},
-		Schedule: Schedule {
-			AwakenTime: desc.ExecDesc.ExpectStartTime,
-			KeepLive:   desc.ExecDesc.KeepLive,
-		},
+		Schedule: execOption.GetExpectStartSchedule(),
 	}
 
-	_, err = svc.scheduler.ScheduleTask(ctx, task, desc.Overlap)
+	_, err = svc.scheduler.ScheduleTask(ctx, task, overlap)
 	if err != nil {
 		return err
 	}
@@ -131,11 +136,13 @@ func (svc *Manager) CloseTask(ctx context.Context, taskKey string) error {
 	if t == nil {
 		return nil
 	}
-	t.Execution.End(ExecResult{
-		NextExec: ExecConfig{
-			ExpectStartTime: time.Now(),
-		},
-	}, time.Now())
+	var now  =	time.Now()
+
+	t.Schedule = Schedule{
+		AwakenTime: now,
+		CompensateDuration: svc.option.WaitCloseDuration * 2,
+	}
+	t.Execution.End(ExecResult{}, now)
 	_, err = svc.scheduler.ScheduleTask(ctx, *t, true)
 	return err
 }
@@ -155,10 +162,11 @@ func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecResu
 	exec.End(result, time.Now())
 
 	t.Schedule = Schedule{
-		AwakenTime: time.Now(),
-		KeepLive: task.Execution.Config.KeepLive,
+		AwakenTime:         time.Now(),
+		CompensateDuration: svc.option.WaitCloseDuration * 2,
 	}
 
+	t.Info.StartCount = 0
 	_, err = svc.scheduler.ScheduleTask(ctx, *t, false)
 	return err
 }
@@ -176,46 +184,35 @@ func (svc *Manager) KeepLive(ctx context.Context, task Task) error {
 	exec := &t.Execution
 	exec.LastKeepLive = time.Now()
 
-	t.Schedule = Schedule {
-		AwakenTime: time.Now(),
-		KeepLive: task.Execution.Config.KeepLive,
-	}
-
+	t.Schedule = exec.Config.GetExecutingSchedule()
 	_, err = svc.scheduler.ScheduleTask(ctx, *t, false)
 	return err
 }
 
 
-func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) error {
-	maxDuration := task.Info.ExecConfig.MaxExecDuration
-	if maxDuration == 0 {
-		maxDuration = svc.maxRedundancy
-	}
-	task.Info.ExecConfig.MaxExecDuration = maxDuration
-
-	if task.Info.ExecConfig.ExpectStartTime.IsZero() {
-		task.Info.ExecConfig.ExpectStartTime = time.Now()
+func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) (ok bool, err error) {
+	// reconfig by manager option
+	if task.Info.ExecOption.MaxRestart != nil && *task.Info.ExecOption.MaxRestart > 0 {
+		maxRestart := *task.Info.ExecOption.MaxRestart
+		if maxRestart < task.Info.StartCount {
+			return false, nil
+		}
 	}
 
-	task.Schedule.AwakenTime = task.Info.ExecConfig.ExpectStartTime
-
+	task.Schedule = task.Info.ExecOption.GetExpectStartSchedule()
 	stageID, err := svc.scheduler.NewStageID(ctx, task.Key)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	task.NewExec(stageID)
+	task.NewExec(stageID, task.Info.ExecOption)
 	_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
-	return err
+	return true, err
 }
 
-func (svc *Manager) getRandomRedundancy() time.Duration {
-	return time.Duration(rand.Int63n(int64(svc.maxRedundancy)))
-}
-
-func (svc *Manager) getExecutingAwakeTime(exec Execution) time.Time {
-	return exec.Config.ExpectStartTime.Add(exec.Config.MaxExecDuration).Add(svc.getRandomRedundancy())
-}
+//func (svc *Manager) getRandomRedundancy() time.Duration {
+//	return time.Duration(rand.Int63n(int64(svc.option.WaitCloseDuration)))
+//}
 
 func (svc *Manager) processOverlappedTask(ctx context.Context, task *Task) error {
 	if task == nil {
@@ -231,6 +228,7 @@ func (svc *Manager) processOverlappedTask(ctx context.Context, task *Task) error
 func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	var (
 		err error
+		ok bool
 	)
 
 	if task == nil {
@@ -238,9 +236,12 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	}
 
 	if !task.Execution.Available {
-		err = svc.newTaskExecution(ctx, task)
+		ok, err = svc.newTaskExecution(ctx, task)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			svc.closeTask(ctx, task)
 		}
 		return nil
 	}
@@ -254,13 +255,23 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	case exec.WaitingStart():
 		_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
 	case exec.Executing():
-		if exec.IsDead(t) && task.Info.ExecConfig.RemainExecCount > 0 {
-			err = svc.newTaskExecution(ctx, task)
+		if exec.OverExecTime(t) || exec.IsDead(t) {
+			if task.Info.CanRestart() {
+				ok, err = svc.newTaskExecution(ctx, task)
+				if err == nil && !ok {
+					svc.closeTask(ctx, task)
+				}
+			} else {
+				svc.closeTask(ctx, task)
+			}
 		}
 	case exec.Ended():
-		if exec.CanRetry() {
-			task.Info.ExecConfig = exec.Result.NextExec
-			err = svc.newTaskExecution(ctx, task)
+		if exec.Result.Continue {
+			task.Info.ExecOption = task.Info.ExecOption.Merge(exec.Result.NextExec)
+			ok, err = svc.newTaskExecution(ctx, task)
+			if err == nil && !ok {
+				svc.closeTask(ctx, task)
+			}
 		} else {
 			svc.closeTask(ctx, task)
 		}
@@ -275,9 +286,10 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 
 func (svc *Manager) doExec(ctx context.Context, task *Task) {
 	task.Execution.Start(time.Now())
-	task.Schedule.AwakenTime = svc.getExecutingAwakeTime(task.Execution)
-	task.Info.ExecConfig.RemainExecCount --
-	task.Info.ExecCount ++
+
+	task.Schedule = task.Execution.Config.GetExecutingSchedule()
+	task.Info.StartCount++
+	task.Info.ExecCount++
 	t, err := svc.scheduler.ScheduleTask(ctx, *task, false)
 	if err != nil {
 		return
@@ -289,20 +301,19 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 			Context:   ctx,
 			manager:   svc,
 			task:   t,
-			execCount: task.Info.ExecCount,
 		})
 		return promise.Result{
 			Err: err,
 		}
 	})
-	svc.ps.setPromise(ctx, task.Key, p, svc.maxRedundancy)
+	svc.ps.setPromise(ctx, task.Key, p, svc.option.WaitCloseDuration)
 	return
 }
 
 func (svc *Manager) closeTask(ctx context.Context, t *Task) {
 	if svc.scheduler.CloseTaskSchedule(ctx, *t) == nil {
 		//TODO close memory
-		runCtx, _ := context.WithTimeout(ctx, svc.maxRedundancy)
+		runCtx, _ := context.WithTimeout(ctx, svc.option.WaitCloseDuration)
 		svc.ps.delete(runCtx, t.Key)
 	}
 }
@@ -331,7 +342,7 @@ func (svc *Manager) doProcess(ctx context.Context, awaken Awaken) error {
 		}
 	}, promise.PartitionMiddle(true), promise.EventKeyMiddle(int(h.Sum32())))
 
-	svc.ps.setPromise(ctx, awaken.Task.Key, p, svc.maxRedundancy)
+	svc.ps.setPromise(ctx, awaken.Task.Key, p, svc.option.WaitCloseDuration)
 	return ctx.Err()
 }
 
