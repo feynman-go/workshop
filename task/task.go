@@ -97,10 +97,10 @@ type Info struct {
 }
 
 func (info Info) CanRestart() bool {
-	if info.ExecOption.MaxRestart == nil {
+	if info.ExecOption.MaxRecover == nil {
 		return false
 	}
-	return info.StartCount < *info.ExecOption.MaxRestart
+	return info.StartCount < *info.ExecOption.MaxRecover
 }
 
 type Execution struct {
@@ -109,7 +109,7 @@ type Execution struct {
 	CreateTime   time.Time  `bson:"createTime,omitempty"`
 	StartTime    time.Time  `bson:"startTime,omitempty"`
 	EndTime      time.Time  `bson:"endTime,omitempty"`
-	Result       ExecResult `bson:"result,omitempty"`
+	Result       ExecInfo   `bson:"result,omitempty"`
 	LastKeepLive time.Time  `bson:"lastKeepLive,omitempty"`
 }
 
@@ -117,7 +117,7 @@ func (er *Execution) Start(t time.Time) {
 	er.StartTime = t
 }
 
-func (er *Execution) End(result ExecResult, t time.Time) {
+func (er *Execution) End(result ExecInfo, t time.Time) {
 	er.Result = result
 	er.EndTime = t
 }
@@ -187,31 +187,41 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 	return lastTime.Before(t)
 }
 
-type ExecResult struct {
+type ExecInfo struct {
 	ResultInfo string     `bson:"resultInfo"`
 	ResultCode int64      `bson:"resultCode"`
 	Continue   bool       `bson:"continue"`
 	NextExec   ExecOption `bson:"next,omitempty"`
 }
 
-type ExecSummery struct {
-	CurrentIndex int32
-	ExpectExecTime time.Time
-	MaxDuration time.Duration
+func (er ExecInfo) WithFinished() ExecInfo {
+	er.Continue = false
+	return er
 }
+
+func (er ExecInfo) WithReDo(wait time.Duration) ExecInfo {
+	er.Continue = true
+	er.NextExec = er.NextExec.SetExpectStartTime(time.Now().Add(wait))
+	return er
+}
+
+func (er ExecInfo) WithMaxDuration(maxDuration time.Duration) ExecInfo {
+	er.NextExec = er.NextExec.SetMaxExecDuration(maxDuration)
+	return er
+}
+
+func (er ExecInfo) WithMaxRecover(maxRecover int32) ExecInfo {
+	er.NextExec = er.NextExec.SetMaxRecoverCount(maxRecover)
+	return er
+}
+
+
+func (er ExecInfo) KeepLiveDuration(keepLive time.Duration) ExecInfo {
+	er.NextExec = er.NextExec.SetMaxExecDuration(keepLive)
+	return er
+}
+
 
 type Summery struct {
 	StatusCount map[StatusCode]int64
-}
-
-type StatusProfile struct {
-	Total    int64     `json:"total"`
-	Count    int64     `json:"count"`
-	Profiles []Profile `json:"profile"`
-}
-
-type Profile struct {
-	TaskKey    string
-	Status     StatusCode
-	Executions []Execution
 }

@@ -35,5 +35,5 @@ func (pl *PartitionLeaders) SyncLeader(ctx context.Context, partitionLeaded func
 		})
 	}
 	pl.rw.RUnlock()
-	parallel.RunByContext(ctx, rs...)
+	syncrun.RunByContext(ctx, rs...)
 }

@@ -132,7 +132,7 @@ func (mgo *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, er
 	var election leader.Election
 	var streamErr error
 
-	parallel.RunParallel(ctx, func(ctx context.Context) {
+	syncrun.RunParallel(ctx, func(ctx context.Context) {
 		for ctx.Err() == nil {
 			runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
 			pipeline := mongo.Pipeline{bson.D{{"$match", bson.M{"_id": mgo.key}}}}
