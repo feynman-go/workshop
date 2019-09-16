@@ -2,7 +2,8 @@ package notify
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/parallel/prob"
+	"github.com/feynman-go/workshop/syncrun/prob"
+	"log"
 	"net/textproto"
 	"time"
 )
@@ -12,48 +13,79 @@ type Publisher interface {
 }
 
 type Notifier struct {
-	pb *prob.Prob
-	steam MessageStream
+	pb         *prob.Prob
+	stream     MessageStream
 	whiteBoard WhiteBoard
-	publisher Publisher
+	publisher  Publisher
+	trigger    Trigger
+}
+
+func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher, trigger Trigger) *Notifier {
+	ret := &Notifier {
+		stream: stream,
+		whiteBoard: whiteBoard,
+		publisher: publisher,
+		trigger: trigger,
+	}
+	ret.pb = prob.New(ret.run)
+	return ret
 }
 
 func (notifier *Notifier) Start(ctx context.Context, restartMax time.Duration, restartMin time.Duration) error {
 	notifier.pb.Start()
-	go prob.SyncRunWithRestart(notifier.pb, notifier.run, prob.RandomRestart(restartMin, restartMax))
 	return nil
 }
 
-func (notifier *Notifier) run(ctx context.Context) (canRestart bool) {
+func (notifier *Notifier) run(ctx context.Context) {
+	for {
+		select {
+		case <- ctx.Done():
+			return
+		case <- notifier.trigger.Trigger():
+			notifier.trySendMessage(ctx)
+		}
+	}
+}
+
+func (notifier *Notifier) trySendMessage(ctx context.Context) error {
 	token, err := notifier.whiteBoard.GetResumeToken(ctx)
 	if err != nil {
-		return true
+		return err
 	}
 
-	cursor, err := notifier.steam.ResumeFromToken(ctx, token)
+	cursor, err := notifier.stream.ResumeFromToken(ctx, token)
 	if err != nil {
-		return true
+		return err
 	}
+
+	defer func() {
+		closeCtx, _ := context.WithCancel(context.Background())
+		err = cursor.Close(closeCtx)
+		if err != nil {
+			log.Println("cursor close err:", err)
+		}
+	}()
 
 	for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
 		err = notifier.publisher.Publish(ctx, msg)
 		if err != nil {
-			return true
+			return err
 		}
 		err = notifier.whiteBoard.StoreResumeToken(ctx, cursor.ResumeToken())
 		if err != nil {
-			return true
+			return err
 		}
 	}
+	return nil
 }
 
 func (notifier *Notifier) Close() error {
-	notifier.pb.Close()
+	notifier.pb.Stop()
 	return nil
 }
 
 func (notifier *Notifier) Closed() chan <- struct{} {
-	return notifier.pb.Closed()
+	return notifier.pb.Stopped()
 }
 
 
@@ -81,4 +113,8 @@ type Cursor interface {
 
 type MessageStream interface {
 	ResumeFromToken(ctx context.Context, resumeToken string) (Cursor, error)
+}
+
+type Trigger interface {
+	Trigger() <- chan struct{}
 }
