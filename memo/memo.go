@@ -61,7 +61,7 @@ func (store *MemoStore) start(ctx context.Context) {
 			return false
 		}
 		return true
-	}, prob.RandRestart(0, 0))
+	}, prob.RandomRestart(0, 0))
 	pb.Start()
 	store.pb = pb
 }

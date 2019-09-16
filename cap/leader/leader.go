@@ -277,7 +277,7 @@ func (mb *Member) Start() bool {
 				mb.handleElectionNotify(ctx, e)
 			}
 			return true
-		}, prob.RandRestart(0, 0))
+		}, prob.RandomRestart(0, 0))
 		mb.pb.Start()
 		return true
 	}

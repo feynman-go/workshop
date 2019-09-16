@@ -390,7 +390,7 @@ func (svc *Manager) start(ctx context.Context) {
 			log.Println("run scheduler err:", err)
 		}
 		return true
-	}, prob.RandRestart(time.Second, 3 * time.Second))
+	}, prob.RandomRestart(time.Second, 3 * time.Second))
 	svc.pb = pb
 
 }

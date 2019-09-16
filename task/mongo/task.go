@@ -164,7 +164,7 @@ func (ts *TaskScheduler) start() {
 			ts.runPartition(ctx, pid)
 		})
 		return true
-	}, prob.RandRestart(time.Second, 3 * time.Second))
+	}, prob.RandomRestart(time.Second, 3 * time.Second))
 
 	ts.pb.Start()
 }

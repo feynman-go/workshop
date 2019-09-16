@@ -165,7 +165,7 @@ func SyncRunWithRestart(prob *Prob, runFunc func(ctx context.Context) (canRestar
 	})
 }
 
-func RandRestart(min, max time.Duration) func() time.Duration {
+func RandomRestart(min, max time.Duration) func() time.Duration {
 	return func() time.Duration {
 		return randtime.RandDuration(min, max)
 	}
