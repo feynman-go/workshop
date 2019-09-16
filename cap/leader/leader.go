@@ -151,7 +151,7 @@ func (mb *Member) startKeepLive(ctx context.Context) error {
 	})
 }
 
-func (mb *Member) process(ctx context.Context) task.ExecResult {
+func (mb *Member) process(ctx context.Context) task.ExecInfo {
 	var delta time.Duration
 	info := mb.GetInfo()
 	if info.IsLeader {
@@ -164,11 +164,11 @@ func (mb *Member) process(ctx context.Context) task.ExecResult {
 		log.Println("did start elect next:", time.Now().Add(delta))
 	}
 
-	return task.ExecResult{
+	return task.ExecInfo{
 		NextExec: task.ExecOption{}.
 			SetExpectStartTime(time.Now().Add(delta)).
 			SetMaxExecDuration(mb.getElectionDuration()).
-			SetMaxRetryCount(0),
+			SetMaxRecoverCount(0),
 	}
 }
 

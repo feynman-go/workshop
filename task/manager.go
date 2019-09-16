@@ -2,9 +2,9 @@ package task
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/parallel"
-	"github.com/feynman-go/workshop/parallel/prob"
 	"github.com/feynman-go/workshop/promise"
+	"github.com/feynman-go/workshop/syncrun"
+	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/pkg/errors"
 	"hash"
 	"hash/crc32"
@@ -14,12 +14,12 @@ import (
 )
 
 type Executor interface {
-	StartExecution(cb Context) error
+	StartExecution(cb Context) ExecInfo
 }
 
-type FuncExecutor func(cb Context) error
+type FuncExecutor func(cb Context) ExecInfo
 
-func (fe FuncExecutor) StartExecution(cb Context) error {
+func (fe FuncExecutor) StartExecution(cb Context) ExecInfo {
 	return fe(cb)
 }
 
@@ -47,16 +47,10 @@ func (cb Context) Task() Task {
 	return cb.task
 }
 
-func (cb Context) Callback(ctx context.Context, res ExecResult) error {
-	err := cb.manager.TaskCallback(ctx, cb.task, res)
-	return err
-}
-
 func (cb Context) KeepLive(ctx context.Context) error {
 	err := cb.manager.KeepLive(ctx, cb.task)
 	return err
 }
-
 
 type Manager struct {
 	pool      *promise.Pool
@@ -142,12 +136,12 @@ func (svc *Manager) CloseTask(ctx context.Context, taskKey string) error {
 		AwakenTime: now,
 		CompensateDuration: svc.option.WaitCloseDuration * 2,
 	}
-	t.Execution.End(ExecResult{}, now)
+	t.Execution.End(ExecInfo{}, now)
 	_, err = svc.scheduler.ScheduleTask(ctx, *t, true)
 	return err
 }
 
-func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecResult) error {
+func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecInfo) error {
 	t, err := svc.scheduler.ReadTask(ctx, task.Key)
 	if err != nil {
 		return err
@@ -192,8 +186,8 @@ func (svc *Manager) KeepLive(ctx context.Context, task Task) error {
 
 func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) (ok bool, err error) {
 	// reconfig by manager option
-	if task.Info.ExecOption.MaxRestart != nil && *task.Info.ExecOption.MaxRestart > 0 {
-		maxRestart := *task.Info.ExecOption.MaxRestart
+	if task.Info.ExecOption.MaxRecover != nil && *task.Info.ExecOption.MaxRecover > 0 {
+		maxRestart := *task.Info.ExecOption.MaxRecover
 		if maxRestart < task.Info.StartCount {
 			return false, nil
 		}
@@ -297,11 +291,12 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 
 	// todo to imply
 	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
-		err := svc.executor.StartExecution(Context{
+		execInfo := svc.executor.StartExecution(Context{
 			Context:   ctx,
 			manager:   svc,
 			task:   t,
 		})
+		err = svc.TaskCallback(ctx, t, execInfo)
 		return promise.Result{
 			Err: err,
 		}
@@ -369,11 +364,11 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 }*/
 
 func (svc *Manager) Close(ctx context.Context) error {
-	parallel.RunParallel(ctx, func(ctx context.Context) {
-		svc.pb.Close()
+	syncrun.Run(ctx, func(ctx context.Context) {
+		svc.pb.Stop()
 		select {
 		case <- ctx.Done():
-		case <- svc.pb.Closed():
+		case <- svc.pb.Stopped():
 		}
 	}, func(ctx context.Context) {
 		svc.scheduler.Close(ctx)
@@ -382,15 +377,14 @@ func (svc *Manager) Close(ctx context.Context) error {
 }
 
 func (svc *Manager) start(ctx context.Context) {
-	pb := prob.New()
-	pb.Start()
-	go prob.SyncRunWithRestart(pb, func(ctx context.Context) bool {
+	pb := prob.New(syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
 		err := svc.runScheduler(ctx)
 		if err != nil {
 			log.Println("run scheduler err:", err)
 		}
 		return true
-	}, prob.RandRestart(time.Second, 3 * time.Second))
+	}, syncrun.RandRestart(time.Second, 3 * time.Second)))
+	pb.Start()
 	svc.pb = pb
 
 }
@@ -463,7 +457,7 @@ func (store *promiseStore) delete(ctx context.Context, taskKey string) {
 
 var promiseWrapPool = sync.Pool{
 	New: func() interface{} {
-		return 	&promiseWrap{
+		return &promiseWrap {
 
 		}
 	},

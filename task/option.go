@@ -7,20 +7,20 @@ import (
 
 func DefaultManagerOption () ManagerOption{
 	return ManagerOption {
-		MaxBusterTask: runtime.NumGoroutine() * 8,
-		DefaultExecMaxDuration: time.Minute,
-		DefaultRetryCount: 3,
+		MaxBusterTask:             runtime.NumGoroutine() * 8,
+		DefaultExecMaxDuration:    time.Minute,
+		DefaultRecoverCount:       3,
 		DefaultCompensateDuration: time.Minute,
-		WaitCloseDuration: 10 * time.Second,
+		WaitCloseDuration:         10 * time.Second,
 	}
 }
 
 type ManagerOption struct {
-	MaxBusterTask          int
-	DefaultExecMaxDuration time.Duration
-	DefaultRetryCount 		   int32
-	DefaultCompensateDuration     time.Duration
-	WaitCloseDuration      time.Duration
+	MaxBusterTask             int
+	DefaultExecMaxDuration    time.Duration
+	DefaultRecoverCount       int32
+	DefaultCompensateDuration time.Duration
+	WaitCloseDuration         time.Duration
 }
 
 func (mOpt ManagerOption) Option() Option {
@@ -31,8 +31,8 @@ func (mOpt ManagerOption) Option() Option {
 	if mOpt.DefaultExecMaxDuration != 0 {
 		opt = opt.SetMaxExecDuration(mOpt.DefaultExecMaxDuration)
 	}
-	if mOpt.DefaultRetryCount != 0 {
-		opt = opt.SetMaxRestartCount(mOpt.DefaultRetryCount)
+	if mOpt.DefaultRecoverCount != 0 {
+		opt = opt.SetMaxRestartCount(mOpt.DefaultRecoverCount)
 	}
 
 	return opt
@@ -48,8 +48,8 @@ func (mOpt ManagerOption) CompleteWith(dmp ManagerOption) ManagerOption {
 	if mOpt.DefaultExecMaxDuration == 0 {
 		mOpt.DefaultExecMaxDuration = dmp.DefaultExecMaxDuration
 	}
-	if mOpt.DefaultRetryCount == 0 {
-		mOpt.DefaultRetryCount = dmp.DefaultRetryCount
+	if mOpt.DefaultRecoverCount == 0 {
+		mOpt.DefaultRecoverCount = dmp.DefaultRecoverCount
 	}
 	if mOpt.DefaultCompensateDuration == 0 {
 		mOpt.DefaultCompensateDuration = dmp.DefaultCompensateDuration
@@ -84,7 +84,7 @@ func (opt Option) SetMaxExecDuration(maxExec time.Duration) Option {
 }
 
 func (opt Option) SetMaxRestartCount(count int32) Option {
-	opt.Exec = opt.Exec.SetMaxRetryCount(count)
+	opt.Exec = opt.Exec.SetMaxRecoverCount(count)
 	return opt
 }
 
@@ -108,7 +108,7 @@ func (opt Option) Merge(option Option) Option {
 type ExecOption struct {
 	ExpectStartTime    *time.Time     `bson:"expectRetryTime,omitempty"`
 	MaxExecDuration    *time.Duration `bson:"maxExecDuration,omitempty"`
-	MaxRestart         *int32         `bson:"remainExec,omitempty"`
+	MaxRecover         *int32         `bson:"remainExec,omitempty"`
 	CompensateDuration *time.Duration `bson:"compensateDuration,omitempty"`
 }
 
@@ -117,8 +117,8 @@ func (e ExecOption) Merge(option ExecOption) ExecOption {
 	if option.CompensateDuration != nil {
 		newOpt.CompensateDuration = option.CompensateDuration
 	}
-	if option.MaxRestart != nil {
-		newOpt.MaxRestart = option.MaxRestart
+	if option.MaxRecover != nil {
+		newOpt.MaxRecover = option.MaxRecover
 	}
 	if option.MaxExecDuration != nil {
 		newOpt.MaxExecDuration = option.MaxExecDuration
@@ -139,8 +139,8 @@ func (e ExecOption) SetMaxExecDuration(dur time.Duration) ExecOption {
 	return e
 }
 
-func (e ExecOption) SetMaxRetryCount(count int32) ExecOption {
-	e.MaxRestart = &count
+func (e ExecOption) SetMaxRecoverCount(count int32) ExecOption {
+	e.MaxRecover = &count
 	return e
 }
 
@@ -150,7 +150,7 @@ func (e ExecOption) SetCompensateDuration(dur time.Duration) ExecOption {
 }
 
 func (e ExecOption) SetFinished() ExecOption {
-	return e.SetMaxRetryCount(0)
+	return e.SetMaxRecoverCount(0)
 }
 
 func (e ExecOption) GetExpectTime() time.Time {
@@ -164,14 +164,14 @@ func (e ExecOption) GetExpectTime() time.Time {
 
 func (e ExecOption) AddRemainExecCount(delta int32) ExecOption {
 	var ct int32
-	if e.MaxRestart != nil {
-		ct = *e.MaxRestart
+	if e.MaxRecover != nil {
+		ct = *e.MaxRecover
 	}
 	ct += delta
 	if ct < 0 {
 		ct = 0
 	}
-	return e.SetMaxRetryCount(ct)
+	return e.SetMaxRecoverCount(ct)
 }
 
 

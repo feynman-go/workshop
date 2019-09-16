@@ -238,7 +238,7 @@ func(ts *TaskScheduler) initTasks(ctx context.Context, startKey, endKey sortKey)
 func(ts *TaskScheduler) runPartition(ctx context.Context, pid leader.PartitionID) {
 	var errChan = make(chan error, 1)
 
-	parallel.RunParallel(ctx, func(ctx context.Context) {
+	syncrun.RunParallel(ctx, func(ctx context.Context) {
 		// TODO create index
 		var (
 			first bool
