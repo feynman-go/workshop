@@ -10,22 +10,20 @@ import (
 
 type Aggregator interface {
 	Aggregate(ctx context.Context, item Whiteboard, input interface{}) (err error)
-
 	// return new whiteboard data
-	ResetData(ctx context.Context, last Whiteboard) interface{}
+	Trigger(ctx context.Context, nextSeq uint64)
 }
 
 type Window struct {
 	rw          sync.RWMutex
 	current     Whiteboard
 	aggregator  Aggregator
-	waitChan    chan Whiteboard
 	triggers    []Trigger
 	pb          *prob.Prob
 	triggerChan chan uint64
 }
 
-func New(ag Aggregator, whiteBoardData interface{} , triggers []Trigger) *Window {
+func New(ag Aggregator, triggers []Trigger) *Window {
 	return &Window{
 		aggregator: ag,
 		triggers: triggers,
@@ -35,7 +33,6 @@ func New(ag Aggregator, whiteBoardData interface{} , triggers []Trigger) *Window
 			Seq: 0,
 			Count: 0,
 			resetChan: make(chan struct{}),
-			Data: whiteBoardData,
 		},
 	}
 }
@@ -44,7 +41,7 @@ func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	w.rw.Lock()
 	defer w.rw.Unlock()
 
-	w.start()
+	w.start(ctx)
 	err := w.aggregator.Aggregate(ctx, w.current, input)
 	if err != nil {
 		return err
@@ -54,7 +51,7 @@ func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	return nil
 }
 
-func (w *Window) Close(ctx context.Context, input interface{}) error {
+func (w *Window) Close(ctx context.Context) error {
 	var seq uint64
 	w.rw.Lock()
 	seq = w.current.Seq
@@ -66,16 +63,10 @@ func (w *Window) Close(ctx context.Context, input interface{}) error {
 	return nil
 }
 
-func (w *Window) WaitChan() <- chan Whiteboard {
-	return w.waitChan
-}
-
 type Whiteboard struct {
 	StartTime time.Time
-	LastData  interface{}
-	Data      interface{}
 	Seq       uint64
-	Count     int32
+	Count     uint64
 	resetChan chan <- struct{}
 }
 
@@ -85,9 +76,13 @@ type Trigger interface {
 	Reset(nextSeq uint64)
 }
 
-func (w *Window) start() bool {
+func (w *Window) start(ctx context.Context) bool {
 	if w.pb == nil {
 		w.pb = prob.New(w.run)
+		for _, tg := range w.triggers {
+			tg.Reset(w.current.Seq)
+		}
+		w.aggregator.Trigger(ctx, w.current.Seq)
 	}
 	return w.pb.Start()
 }
@@ -99,17 +94,15 @@ func (w *Window) handleTriggerOn(ctx context.Context, seq uint64) {
 	if seq == w.current.Seq {
 		last := w.current
 		w.current = Whiteboard{
-			LastData: last,
-			Data: w.aggregator.ResetData(ctx, last),
 			StartTime: time.Now(),
 			Seq:       last.Seq + 1,
 			resetChan: make(chan struct{}),
 		}
+		w.aggregator.Trigger(ctx, w.current.Seq)
 		for _, tg := range w.triggers{
 			tg.Reset(w.current.Seq)
 		}
 		close(last.resetChan)
-		w.waitChan <- last
 	}
 }
 
@@ -117,7 +110,7 @@ func (w *Window) runTriggerHandler(ctx context.Context) {
 	for {
 		select {
 		case <- ctx.Done():
-
+			return
 		case seq := <- w.triggerChan:
 			w.handleTriggerOn(ctx, seq)
 		}

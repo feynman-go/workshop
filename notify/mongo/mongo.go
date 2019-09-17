@@ -2,61 +2,85 @@ package mongo
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"github.com/feynman-go/workshop/notify"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"sync"
 	"time"
 )
 
-func FetchMessage(raw bson.Raw) (notify.Message, error) {
-
-}
-
-type document struct {
-	Seq int64 `bson:"_seq"`
-}
-
-func ReadMessage() {
-
-}
-
-func InsertMessage() {
-
-}
-
 type Cursor struct {
-
+	rw sync.RWMutex
+	err error
+	cs *mongo.ChangeStream
+	parser Parser
 }
 
 func(c *Cursor) Next(ctx context.Context) *notify.Message {
+	if c.err != nil {
+		return nil
+	}
 
+	if !c.cs.Next(ctx) {
+		return nil
+	}
+
+	msg, err := c.parser(c.cs.Current)
+	if err != nil {
+		c.err = err
+		return nil
+	}
+
+	return &msg
 }
 
 func(c *Cursor) Close(ctx context.Context) error {
-
+	return c.cs.Close(ctx)
 }
 
 func(c *Cursor) Err() error {
-
+	c.rw.RLock()
+	defer c.rw.RUnlock()
+	if c.err != nil {
+		return c.err
+	}
+	return nil
 }
 
-func(c *Cursor) ResumeToken() string {
-
+func (c *Cursor) setErr(err error) {
+	c.rw.Lock()
+	defer c.rw.Unlock()
+	if err != nil {
+		c.err = err
+	}
 }
+
+func (c *Cursor) ResumeToken() string {
+	raw := c.cs.ResumeToken()
+	return base64.RawStdEncoding.EncodeToString(raw)
+}
+
+type Parser func(raw bson.Raw) (notify.Message, error)
 
 type MessageStream struct {
 	query bson.D
-	trigger chan struct{}
 	pb *prob.Prob
 	database *mongo.Database
 	col string
-	streamCol string
+	parser Parser
 }
 
-func NewMessageSteam() {
-
+func NewMessageSteam(database *mongo.Database, col string, query bson.D, parser Parser) *MessageStream {
+	return &MessageStream{
+		query: query,
+		database: database,
+		col: col,
+		parser: parser,
+	}
 }
 
 func (stream *MessageStream) start() {
@@ -68,66 +92,25 @@ func (stream *MessageStream) Close() error {
 	return nil
 }
 
-func (stream *MessageStream) run(ctx context.Context) {
-	for ctx.Err() == nil {
-		runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
-		pipeline := mongo.Pipeline{bson.D{{"$match", stream.query}}}
+func (stream *MessageStream) ResumeFromToken(ctx context.Context, resumeToken string) (notify.Cursor, error){
+	runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
+	pipeline := mongo.Pipeline{bson.D{{"$match", stream.query}}}
 
-		cs, err := stream.database.Collection(stream.col).Watch(runCtx, pipeline,
-			options.ChangeStream().SetFullDocument(options.UpdateLookup),
-			options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
-			options.ChangeStream().SetResumeAfter(),
-		)
-
+	opt := options.ChangeStream().SetFullDocument(options.UpdateLookup).SetMaxAwaitTime(5 * time.Second)
+	if resumeToken != "" {
+		bs, err  := base64.RawStdEncoding.DecodeString(resumeToken)
 		if err != nil {
-			timer := time.NewTimer(2 * time.Second)
-			select {
-			case <- timer.C:
-			case <- ctx.Done():
-				return
-			}
-			continue
+			return nil, fmt.Errorf("bad cursor token err: %v", err)
 		}
-
-		var doc = document{}
-		for cs.Next(runCtx) {
-			err = cs.Decode(&doc)
-			if err != nil {
-				cs.Close(ctx)
-				streamErr = err
-				return
-			}
-			lastTime := doc.FullDocument.LastTime
-			if lastTime.Add(mgo.docTooLaterDuration).Before(time.Now()) {
-				continue
-			}
-
-			mgo.cn <- doc
-			mgo.setResumeToken(cs.ResumeToken())
-		}
-
-
-		err = cs.Err()
-		if err == nil || err == mongo.ErrNilCursor || err == context.Canceled || err == context.DeadlineExceeded {
-			cs.Close(runCtx)
-			continue
-		} else {
-			cs.Close(runCtx)
-			streamErr = err
-			return
-		}
+		opt.SetResumeAfter(bson.Raw(bs))
 	}
+
+	cs, err := stream.database.Collection(stream.col).Watch(runCtx, pipeline, opt)
+	if err != nil {
+		return nil, err
+	}
+	return &Cursor{
+		cs: cs,
+		parser: stream.parser,
+	}, nil
 }
-
-func (stream *MessageStream) ResumeFromToken(ctx context.Context, resumeToken string) (Cursor, error){
-
-}
-
-func (stream *MessageStream) Trigger() <- chan struct{} {
-
-}
-
-type Trigger interface {
-
-}
-

@@ -2,10 +2,14 @@ package notify
 
 import (
 	"context"
+	"fmt"
+	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/feynman-go/workshop/window"
+	"github.com/pkg/errors"
 	"log"
 	"net/textproto"
+	"sync"
 	"time"
 )
 
@@ -18,17 +22,36 @@ type Notifier struct {
 	stream     MessageStream
 	whiteBoard WhiteBoard
 	publisher  Publisher
-	wd 		   *window.Window
+	ag         *aggergator
+	triggers   []window.Trigger
 }
 
-func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher) *Notifier {
+type Option struct {
+	MaxCount int64
+	MaxDuration time.Duration
+}
+
+func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher, option Option) *Notifier {
 	ret := &Notifier {
 		stream: stream,
 		whiteBoard: whiteBoard,
-		publisher: publisher,
-		trigger: trigger,
+		ag: &aggergator{
+			publisher: publisher,
+		},
+
 	}
 	ret.pb = prob.New(ret.run)
+
+	var triggers []window.Trigger
+	if option.MaxCount <= 0 {
+		option.MaxCount = 1
+	}
+	triggers = append(triggers, window.NewCounterTrigger(uint64(option.MaxCount)))
+
+	if option.MaxDuration > 0 {
+		triggers = append(triggers, window.NewDurationTrigger(option.MaxDuration))
+	}
+
 	return ret
 }
 
@@ -38,66 +61,40 @@ func (notifier *Notifier) Start(ctx context.Context, restartMax time.Duration, r
 }
 
 func (notifier *Notifier) run(ctx context.Context) {
-	for ctx.Err() != nil {
-		notifier.trySendMessage(ctx)
-	}
-}
-
-func (notifier *Notifier) trySendMessage(ctx context.Context) error {
-	token, err := notifier.whiteBoard.GetResumeToken(ctx)
-	if err != nil {
-		return err
-	}
-
-	cursor, err := notifier.stream.ResumeFromToken(ctx, token)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		closeCtx, _ := context.WithCancel(context.Background())
-		err = cursor.Close(closeCtx)
+	f := syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+		token, err := notifier.whiteBoard.GetResumeToken(ctx)
 		if err != nil {
-			log.Println("cursor close err:", err)
-		}
-	}()
-
-	for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
-		err = notifier.push(ctx, *msg)
-		if err != nil {
-			return err
+			return true
 		}
 
-		msgs, err := notifier.pull()
+		cursor, err := notifier.stream.ResumeFromToken(ctx, token)
 		if err != nil {
-			return err
+			return true
 		}
 
-		if len(msgs) != 0 {
-			lastToken := notifier.publisher.Publish(ctx, msgs)
-			if lastToken != "" {
-				err = notifier.whiteBoard.StoreResumeToken(ctx, lastToken)
-				if err != nil {
-					return err
-				}
+		defer func() {
+			closeCtx, _ := context.WithCancel(context.Background())
+			err = cursor.Close(closeCtx)
+			if err != nil {
+				log.Println("cursor close err:", err)
 			}
+		}()
 
-			if lastToken != msgs[len(msgs) - 1].Token {
-				return nil
+		notifier.ag.Reset()
+		wd := window.New(notifier.ag,notifier.triggers)
+
+		for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
+			err = wd.Accept(ctx, *msg)
+			if err != nil {
+				log.Println("push message err:", err)
+				break
 			}
 		}
-	}
-	return nil
+		return true
+	}, syncrun.RandRestart(time.Second, 5 * time.Second))
+
+	f(ctx)
 }
-
-func (notifier *Notifier) push(ctx context.Context, message Message) error {
-
-}
-
-func (notifier *Notifier) pull() ([]Message, error){
-
-}
-
 
 func (notifier *Notifier) Close() error {
 	notifier.pb.Stop()
@@ -107,7 +104,6 @@ func (notifier *Notifier) Close() error {
 func (notifier *Notifier) Closed() chan <- struct{} {
 	return notifier.pb.Stopped()
 }
-
 
 type Message struct {
 	ID string
@@ -134,4 +130,65 @@ type Cursor interface {
 
 type MessageStream interface {
 	ResumeFromToken(ctx context.Context, resumeToken string) (Cursor, error)
+}
+
+type aggergator struct {
+	rw sync.RWMutex
+	msgs []Message
+	seq uint64
+	publisher Publisher
+	wb WhiteBoard
+	lastErr error
+}
+
+func (agg *aggergator) Aggregate(ctx context.Context, item window.Whiteboard, input interface{}) (err error) {
+	agg.rw.Lock()
+	defer agg.rw.Unlock()
+
+	if agg.lastErr != nil {
+		return fmt.Errorf("has last err: %v", agg.lastErr)
+	}
+
+	msg, ok := input.(Message)
+	if !ok {
+		return errors.New("input must be message")
+	}
+	agg.msgs = append(agg.msgs, msg)
+	return nil
+}
+
+func (agg *aggergator) Reset() {
+	agg.rw.Lock()
+	defer agg.rw.Unlock()
+
+	agg.lastErr = nil
+	agg.msgs = agg.msgs[:0]
+}
+
+func (agg *aggergator) Trigger(ctx context.Context, nextSeq uint64) {
+	agg.rw.Lock()
+	defer agg.rw.Unlock()
+
+	if agg.lastErr == nil {
+		if len(agg.msgs) != 0 {
+			lastToken := agg.publisher.Publish(ctx, agg.msgs)
+			if lastToken == "" {
+				agg.lastErr = errors.New("not support")
+			} else {
+				err := agg.wb.StoreResumeToken(ctx, lastToken)
+				if err == nil {
+					if lastToken != agg.msgs[len(agg.msgs) - 1].Token {
+						agg.lastErr = errors.New("bad message notify")
+					}
+				} else {
+					agg.lastErr = fmt.Errorf("store resume token err: %v", err)
+				}
+			}
+		}
+		if agg.msgs != nil {
+			agg.msgs = agg.msgs[:0]
+		}
+	}
+	agg.seq = nextSeq
+	return
 }
