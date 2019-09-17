@@ -3,13 +3,14 @@ package notify
 import (
 	"context"
 	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/window"
 	"log"
 	"net/textproto"
 	"time"
 )
 
 type Publisher interface {
-	Publish(ctx context.Context, message *Message) error
+	Publish(ctx context.Context, message []Message) (lastToken string)
 }
 
 type Notifier struct {
@@ -17,10 +18,10 @@ type Notifier struct {
 	stream     MessageStream
 	whiteBoard WhiteBoard
 	publisher  Publisher
-	trigger    Trigger
+	wd 		   *window.Window
 }
 
-func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher, trigger Trigger) *Notifier {
+func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher) *Notifier {
 	ret := &Notifier {
 		stream: stream,
 		whiteBoard: whiteBoard,
@@ -37,13 +38,8 @@ func (notifier *Notifier) Start(ctx context.Context, restartMax time.Duration, r
 }
 
 func (notifier *Notifier) run(ctx context.Context) {
-	for {
-		select {
-		case <- ctx.Done():
-			return
-		case <- notifier.trigger.Trigger():
-			notifier.trySendMessage(ctx)
-		}
+	for ctx.Err() != nil {
+		notifier.trySendMessage(ctx)
 	}
 }
 
@@ -67,17 +63,41 @@ func (notifier *Notifier) trySendMessage(ctx context.Context) error {
 	}()
 
 	for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
-		err = notifier.publisher.Publish(ctx, msg)
+		err = notifier.push(ctx, *msg)
 		if err != nil {
 			return err
 		}
-		err = notifier.whiteBoard.StoreResumeToken(ctx, cursor.ResumeToken())
+
+		msgs, err := notifier.pull()
 		if err != nil {
 			return err
+		}
+
+		if len(msgs) != 0 {
+			lastToken := notifier.publisher.Publish(ctx, msgs)
+			if lastToken != "" {
+				err = notifier.whiteBoard.StoreResumeToken(ctx, lastToken)
+				if err != nil {
+					return err
+				}
+			}
+
+			if lastToken != msgs[len(msgs) - 1].Token {
+				return nil
+			}
 		}
 	}
 	return nil
 }
+
+func (notifier *Notifier) push(ctx context.Context, message Message) error {
+
+}
+
+func (notifier *Notifier) pull() ([]Message, error){
+
+}
+
 
 func (notifier *Notifier) Close() error {
 	notifier.pb.Stop()
@@ -93,6 +113,7 @@ type Message struct {
 	ID string
 	PayLoad interface{}
 	Head textproto.MIMEHeader
+	Token string
 }
 
 type Notify struct {
@@ -113,8 +134,4 @@ type Cursor interface {
 
 type MessageStream interface {
 	ResumeFromToken(ctx context.Context, resumeToken string) (Cursor, error)
-}
-
-type Trigger interface {
-	Trigger() <- chan struct{}
 }

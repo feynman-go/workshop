@@ -3,8 +3,8 @@ package mongo
 import (
 	"context"
 	"github.com/feynman-go/workshop/cap/leader"
-	"github.com/feynman-go/workshop/parallel"
-	"github.com/feynman-go/workshop/parallel/prob"
+	"github.com/feynman-go/workshop/syncrun"
+	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/feynman-go/workshop/task"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -158,23 +158,23 @@ func(ts *TaskScheduler) WaitTaskAwaken(ctx context.Context) (awaken task.Awaken,
 }
 
 func (ts *TaskScheduler) start() {
-	ts.pb = prob.New()
-	prob.SyncRunWithRestart(ts.pb, func(ctx context.Context) bool {
+	f := syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
 		ts.leaders.SyncLeader(context.Background(), func(ctx context.Context, pid leader.PartitionID) {
 			ts.runPartition(ctx, pid)
 		})
 		return true
-	}, prob.RandomRestart(time.Second, 3 * time.Second))
+	}, syncrun.RandRestart(time.Second, 3 * time.Second))
 
+	ts.pb = prob.New(f)
 	ts.pb.Start()
 }
 
 func (ts *TaskScheduler) Close(ctx context.Context) error {
-	ts.pb.Close()
+	ts.pb.Stop()
 	select {
 	case <- ctx.Done():
 		return ctx.Err()
-	case <- ts.pb.Closed():
+	case <- ts.pb.Stopped():
 		return nil
 	}
 }
@@ -238,7 +238,7 @@ func(ts *TaskScheduler) initTasks(ctx context.Context, startKey, endKey sortKey)
 func(ts *TaskScheduler) runPartition(ctx context.Context, pid leader.PartitionID) {
 	var errChan = make(chan error, 1)
 
-	syncrun.RunParallel(ctx, func(ctx context.Context) {
+	syncrun.Run(ctx, func(ctx context.Context) {
 		// TODO create index
 		var (
 			first bool

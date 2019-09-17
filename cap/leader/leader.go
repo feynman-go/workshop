@@ -2,7 +2,8 @@ package leader
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/parallel/prob"
+	"github.com/feynman-go/workshop/syncrun"
+	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/feynman-go/workshop/task"
 	"log"
 	"math/rand"
@@ -43,9 +44,9 @@ func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Me
 
 	mb.tasks = task.NewManager(
 		task.NewMemoScheduler(5 * time.Second),
-		task.FuncExecutor(func(cb task.Context) error {
+		task.FuncExecutor(func(cb task.Context) task.ExecInfo {
 			res := mb.process(cb)
-			return cb.Callback(cb, res)
+			return res
 		}),
 		task.DefaultManagerOption(),
 	)
@@ -251,16 +252,15 @@ func (mb *Member) Start() bool {
 	if mb.pb != nil {
 		return false
 	} else {
-		mb.pb = prob.New()
-		go prob.SyncRunWithRestart(mb.pb, func(ctx context.Context) bool {
+		mb.pb = prob.New(syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
 			expectTime := time.Now().Add(mb.getElectionDuration())
 			err := mb.tasks.ApplyNewTask(
 				ctx,
 				"process",
 				task.Option{}.
-				SetExpectStartTime(expectTime).
-				SetMaxExecDuration(mb.getExecDuration()).
-				SetMaxRestartCount(0),
+					SetExpectStartTime(expectTime).
+					SetMaxExecDuration(mb.getExecDuration()).
+					SetMaxRestartCount(0),
 			)
 
 			if err != nil {
@@ -277,7 +277,7 @@ func (mb *Member) Start() bool {
 				mb.handleElectionNotify(ctx, e)
 			}
 			return true
-		}, prob.RandomRestart(0, 0))
+		}, syncrun.RandRestart(0, 0)))
 		mb.pb.Start()
 		return true
 	}
@@ -287,10 +287,10 @@ func (mb *Member) Close(ctx context.Context) error {
 	mb.rw.Lock()
 	defer mb.rw.Unlock()
 	if mb.pb != nil {
-		mb.pb.Close()
+		mb.pb.Stop()
 		defer mb.tasks.Close(ctx)
 		select {
-		case <- mb.pb.Closed():
+		case <- mb.pb.Stopped():
 		case <- ctx.Done():
 			return ctx.Err()
 		}

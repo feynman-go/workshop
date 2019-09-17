@@ -3,7 +3,7 @@ package mongo
 import (
 	"context"
 	"github.com/feynman-go/workshop/cap/leader"
-	"github.com/feynman-go/workshop/parallel"
+	"github.com/feynman-go/workshop/syncrun"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -132,7 +132,7 @@ func (mgo *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, er
 	var election leader.Election
 	var streamErr error
 
-	syncrun.RunParallel(ctx, func(ctx context.Context) {
+	syncrun.Run(ctx, func(ctx context.Context) {
 		for ctx.Err() == nil {
 			runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
 			pipeline := mongo.Pipeline{bson.D{{"$match", bson.M{"_id": mgo.key}}}}
