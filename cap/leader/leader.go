@@ -44,7 +44,7 @@ func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Me
 
 	mb.tasks = task.NewManager(
 		task.NewMemoScheduler(5 * time.Second),
-		task.FuncExecutor(func(cb task.Context) task.ExecInfo {
+		task.FuncExecutor(func(cb task.Context) task.Result {
 			res := mb.process(cb)
 			return res
 		}),
@@ -152,7 +152,7 @@ func (mb *Member) startKeepLive(ctx context.Context) error {
 	})
 }
 
-func (mb *Member) process(ctx context.Context) task.ExecInfo {
+func (mb *Member) process(ctx context.Context) task.Result {
 	var delta time.Duration
 	info := mb.GetInfo()
 	if info.IsLeader {
@@ -165,7 +165,7 @@ func (mb *Member) process(ctx context.Context) task.ExecInfo {
 		log.Println("did start elect next:", time.Now().Add(delta))
 	}
 
-	return task.ExecInfo{
+	return task.Result{
 		NextExec: task.ExecOption{}.
 			SetExpectStartTime(time.Now().Add(delta)).
 			SetMaxExecDuration(mb.getElectionDuration()).

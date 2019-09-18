@@ -81,7 +81,7 @@ func (notifier *Notifier) run(ctx context.Context) {
 		}()
 
 		notifier.ag.Reset()
-		wd := window.New(notifier.ag,notifier.triggers)
+		wd := window.New(notifier.ag, notifier.triggers)
 
 		for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
 			err = wd.Accept(ctx, *msg)
@@ -165,7 +165,10 @@ func (agg *aggergator) Reset() {
 	agg.msgs = agg.msgs[:0]
 }
 
-func (agg *aggergator) Trigger(ctx context.Context, nextSeq uint64) {
+func (agg *aggergator) Trigger(ctx context.Context, acceptErr error, nextSeq uint64) error {
+	if acceptErr != nil {
+		return fmt.Errorf("accept err: %v", acceptErr)
+	}
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
@@ -190,5 +193,5 @@ func (agg *aggergator) Trigger(ctx context.Context, nextSeq uint64) {
 		}
 	}
 	agg.seq = nextSeq
-	return
+	return nil
 }

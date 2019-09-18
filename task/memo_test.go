@@ -18,9 +18,9 @@ func TestManagerBasic(t *testing.T) {
 
 	g := &sync.WaitGroup{}
 	g.Add(1)
-	manager := NewManager(sch, FuncExecutor(func(cb Context) ExecInfo {
+	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result)  {
 		g.Done()
-		return ExecInfo{}
+		res.Finish()
 	}), ManagerOption{})
 
 	err := manager.ApplyNewTask(context.Background(), "1",
@@ -55,11 +55,10 @@ func TestManagerExpectTime(t *testing.T) {
 	sch := NewMemoScheduler(1 * time.Second)
 
 	var flag int32
-	manager := NewManager(sch, FuncExecutor(func(cb Context) ExecInfo {
+	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result)  {
 		atomic.StoreInt32(&flag, 1)
 		defer atomic.StoreInt32(&flag, 2)
 		time.Sleep(1 * time.Second)
-		return ExecInfo{}
 	}), ManagerOption{})
 
 	err := manager.ApplyNewTask(context.Background(), "1",
@@ -104,19 +103,20 @@ func TestTaskRetry(t *testing.T) {
 	sch := NewMemoScheduler(1 * time.Second)
 
 	var count int32
-	manager := NewManager(sch, FuncExecutor(func(cb Context) ExecInfo {
+	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result) {
 		n := atomic.AddInt32(&count, 1)
 		if cb.Task().Info.ExecCount != n {
 			t.Fatal("bad exec count")
 		}
 
-		execInfo := ExecInfo{}.WithReDo(time.Second).WithMaxDuration(time.Second).WithMaxRecover(1)
+		res.WaitAndReDo(time.Second)
+		res.SetMaxDuration(time.Second)
+		res.SetMaxRecover(1)
 
 		if n >= 3 {
-			execInfo = execInfo.WithFinished()
+			res.Finish()
 		}
 
-		return execInfo
 	}), ManagerOption{})
 
 	err := manager.ApplyNewTask(context.Background(), "1",
@@ -146,9 +146,8 @@ func TestTaskRetry(t *testing.T) {
 func TestRepeatTask(t *testing.T) {
 	sch := NewMemoScheduler(1 * time.Second)
 	var start int32
-	manager := NewManager(sch, FuncExecutor(func(cb Context) ExecInfo {
+	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result) {
 		atomic.AddInt32(&start, 1)
-		return ExecInfo{}
 	}), ManagerOption{})
 
 	for i := 0 ; i < 3 ; i++{
@@ -183,16 +182,14 @@ func TestOverLap(t *testing.T) {
 	var start int32
 	var end int32
 
-	manager := NewManager(sch, FuncExecutor(func(cb Context) ExecInfo {
+	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result) {
 		atomic.AddInt32(&start, 1)
 		timer := time.NewTimer(1 * time.Second)
 		select {
 		case <- cb.Done():
-			return ExecInfo{}
 		case <- timer.C:
 			atomic.AddInt32(&end, 1)
 		}
-		return ExecInfo{}
 	}), ManagerOption{})
 
 	err := manager.ApplyNewTask(context.Background(), "1", (&Option{}).SetMaxRestartCount(10))

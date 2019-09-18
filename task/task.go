@@ -109,7 +109,7 @@ type Execution struct {
 	CreateTime   time.Time  `bson:"createTime,omitempty"`
 	StartTime    time.Time  `bson:"startTime,omitempty"`
 	EndTime      time.Time  `bson:"endTime,omitempty"`
-	Result       ExecInfo   `bson:"result,omitempty"`
+	Result       Result     `bson:"result,omitempty"`
 	LastKeepLive time.Time  `bson:"lastKeepLive,omitempty"`
 }
 
@@ -117,7 +117,7 @@ func (er *Execution) Start(t time.Time) {
 	er.StartTime = t
 }
 
-func (er *Execution) End(result ExecInfo, t time.Time) {
+func (er *Execution) End(result Result, t time.Time) {
 	er.Result = result
 	er.EndTime = t
 }
@@ -187,40 +187,36 @@ func (er *Execution) OverExecTime(t time.Time) bool {
 	return lastTime.Before(t)
 }
 
-type ExecInfo struct {
+type Result struct {
 	ResultInfo string     `bson:"resultInfo"`
 	ResultCode int64      `bson:"resultCode"`
 	Continue   bool       `bson:"continue"`
 	NextExec   ExecOption `bson:"next,omitempty"`
 }
 
-func (er ExecInfo) WithFinished() ExecInfo {
+func (er *Result) Finish() {
 	er.Continue = false
-	return er
+	return
 }
 
-func (er ExecInfo) WithReDo(wait time.Duration) ExecInfo {
+func (er *Result) WaitAndReDo(wait time.Duration) {
 	er.Continue = true
 	er.NextExec = er.NextExec.SetExpectStartTime(time.Now().Add(wait))
-	return er
 }
 
-func (er ExecInfo) WithMaxDuration(maxDuration time.Duration) ExecInfo {
+// keep current task alive and return
+func (er *Result) ReturnWithLive(keepLive time.Duration) {
+	er.Continue = true
+	er.NextExec = er.NextExec.SetCompensateDuration(keepLive)
+}
+
+func (er *Result) SetMaxDuration(maxDuration time.Duration) {
 	er.NextExec = er.NextExec.SetMaxExecDuration(maxDuration)
-	return er
 }
 
-func (er ExecInfo) WithMaxRecover(maxRecover int32) ExecInfo {
+func (er *Result) SetMaxRecover(maxRecover int32) {
 	er.NextExec = er.NextExec.SetMaxRecoverCount(maxRecover)
-	return er
 }
-
-
-func (er ExecInfo) KeepLiveDuration(keepLive time.Duration) ExecInfo {
-	er.NextExec = er.NextExec.SetMaxExecDuration(keepLive)
-	return er
-}
-
 
 type Summery struct {
 	StatusCount map[StatusCode]int64

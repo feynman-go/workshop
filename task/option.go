@@ -7,26 +7,25 @@ import (
 
 func DefaultManagerOption () ManagerOption{
 	return ManagerOption {
-		MaxBusterTask:             runtime.NumGoroutine() * 8,
-		DefaultExecMaxDuration:    time.Minute,
-		DefaultRecoverCount:       3,
-		DefaultCompensateDuration: time.Minute,
-		WaitCloseDuration:         10 * time.Second,
+		MaxBusterTask:           runtime.NumGoroutine() * 8,
+		DefaultExecMaxDuration:  time.Minute,
+		DefaultRecoverCount:     3,
+		WaitCloseDuration:       10 * time.Second,
 	}
 }
 
 type ManagerOption struct {
-	MaxBusterTask             int
-	DefaultExecMaxDuration    time.Duration
-	DefaultRecoverCount       int32
-	DefaultCompensateDuration time.Duration
-	WaitCloseDuration         time.Duration
+	MaxBusterTask           int
+	DefaultExecMaxDuration  time.Duration
+	DefaultRecoverCount     int32
+	DefaultKeepLiveDuration time.Duration
+	WaitCloseDuration       time.Duration
 }
 
 func (mOpt ManagerOption) Option() Option {
 	opt := Option{}
-	if mOpt.DefaultCompensateDuration != 0 {
-		opt = opt.SetKeepLiveDuration(mOpt.DefaultCompensateDuration)
+	if mOpt.DefaultKeepLiveDuration != 0 {
+		opt = opt.SetKeepLiveDuration(mOpt.DefaultKeepLiveDuration)
 	}
 	if mOpt.DefaultExecMaxDuration != 0 {
 		opt = opt.SetMaxExecDuration(mOpt.DefaultExecMaxDuration)
@@ -51,8 +50,8 @@ func (mOpt ManagerOption) CompleteWith(dmp ManagerOption) ManagerOption {
 	if mOpt.DefaultRecoverCount == 0 {
 		mOpt.DefaultRecoverCount = dmp.DefaultRecoverCount
 	}
-	if mOpt.DefaultCompensateDuration == 0 {
-		mOpt.DefaultCompensateDuration = dmp.DefaultCompensateDuration
+	if mOpt.DefaultKeepLiveDuration == 0 {
+		mOpt.DefaultKeepLiveDuration = dmp.DefaultKeepLiveDuration
 	}
 	return mOpt
 }

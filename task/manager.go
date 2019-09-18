@@ -14,13 +14,13 @@ import (
 )
 
 type Executor interface {
-	StartExecution(cb Context) ExecInfo
+	Execute(ctx Context, res *Result)
 }
 
-type FuncExecutor func(cb Context) ExecInfo
+type FuncExecutor func(cb Context, res *Result)
 
-func (fe FuncExecutor) StartExecution(cb Context) ExecInfo {
-	return fe(cb)
+func (fe FuncExecutor) Execute(cb Context, res *Result)  {
+	fe(cb, res)
 }
 
 type Awaken struct {
@@ -136,12 +136,12 @@ func (svc *Manager) CloseTask(ctx context.Context, taskKey string) error {
 		AwakenTime: now,
 		CompensateDuration: svc.option.WaitCloseDuration * 2,
 	}
-	t.Execution.End(ExecInfo{}, now)
+	t.Execution.End(Result{}, now)
 	_, err = svc.scheduler.ScheduleTask(ctx, *t, true)
 	return err
 }
 
-func (svc *Manager) TaskCallback(ctx context.Context, task Task, result ExecInfo) error {
+func (svc *Manager) TaskCallback(ctx context.Context, task Task, result Result) error {
 	t, err := svc.scheduler.ReadTask(ctx, task.Key)
 	if err != nil {
 		return err
@@ -291,12 +291,15 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 
 	// todo to imply
 	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
-		execInfo := svc.executor.StartExecution(Context{
+		var res = &Result{}
+		res.Finish()
+
+		svc.executor.Execute(Context{
 			Context:   ctx,
 			manager:   svc,
 			task:   t,
-		})
-		err = svc.TaskCallback(ctx, t, execInfo)
+		}, res)
+		err = svc.TaskCallback(ctx, t, *res)
 		return promise.Result{
 			Err: err,
 		}
