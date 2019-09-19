@@ -1,54 +1,78 @@
 package schedule
 
 import (
-	"container/list"
 	"context"
-	"github.com/feynman-go/workshop/promise"
+	"github.com/feynman-go/workshop/syncrun/prob"
+	"log"
 	"sync"
 	"time"
 )
 
-type Scheduler struct {
-	rw      sync.RWMutex
-	l       *list.List
-	pool    *promise.Pool
-	newChan chan struct{}
-	m *sync.Map
+type List interface {
+	Front() Element
+	Insert(*Schedule) Element
 }
 
-func New(pool *promise.Pool) *Scheduler {
+type Element interface {
+	Next() Element
+	IsHead() bool
+	Schedule() Schedule
+}
+
+type Scheduler struct {
+	rw      sync.RWMutex
+	pb 		*prob.Prob
+	newChan chan struct{}
+	l List
+}
+
+func New(list List) *Scheduler {
 	return &Scheduler{
-		l:       list.New(),
-		pool:    pool,
+		l:       list,
 		newChan: make(chan struct{}, 2),
-		m: &sync.Map{},
 	}
 }
 
-func (sr *Scheduler) AddPlan(startTime time.Time, endTime time.Time, action func(ctx context.Context) error) *Schedule {
+func (sr *Scheduler) Start() bool {
+	sr.rw.Lock()
+	defer sr.rw.Unlock()
+	if sr.pb == nil {
+		sr.pb = prob.New(func(ctx context.Context) {
+			err := sr.run(ctx)
+			if err != nil {
+				log.Println("run err")
+			}
+		})
+		return sr.pb.Start()
+	}
+	return sr.pb.Start()
+}
+
+func (sr *Scheduler) Close(ctx context.Context) error {
+	sr.rw.Lock()
+	if sr.pb == nil {
+		sr.rw.Unlock()
+		return nil
+	}
+	sr.pb.Stop()
+	sr.rw.Unlock()
+	select {
+	case <- sr.pb.Stopped():
+		return nil
+	case <- ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (sr *Scheduler) AddPlan(startTime time.Time, endTime time.Time) *Schedule {
 	var node = &Schedule{
-		action:      action,
 		expectStart: startTime,
 		endTime:     endTime,
 	}
 	sr.rw.Lock()
 	defer sr.rw.Unlock()
 
-	head := sr.l.Front()
-	for ; head != nil; head = head.Next() {
-		in := head.Value.(*Schedule)
-		if node.expectStart.Before(in.expectStart) {
-			break
-		}
-	}
-
-	if head != nil {
-		node.e = sr.l.InsertBefore(node, head)
-	} else {
-		node.e = sr.l.PushFront(node)
-	}
-
-	sr.m.Store(node, true)
+	sr.l.Insert(node)
 
 	go func() {
 		select {
@@ -59,7 +83,7 @@ func (sr *Scheduler) AddPlan(startTime time.Time, endTime time.Time, action func
 	return node
 }
 
-func (sr *Scheduler) Remove(schedule Schedule) {
+func (sr *Scheduler) Remove(schedule *Schedule) {
 	sr.rw.Lock()
 	defer sr.rw.Unlock()
 
@@ -97,7 +121,7 @@ func (sr *Scheduler) pop() {
 	sr.l.Remove(head)
 }
 
-func (sr *Scheduler) Run(ctx context.Context) error {
+func (sr *Scheduler) run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		var (
 			headNode = sr.peak()
@@ -131,22 +155,20 @@ func (sr *Scheduler) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (sr *Scheduler) startAction(ctx context.Context, node *Schedule) {
-	if node.action != nil {
-		p := promise.NewPromise(sr.pool, func(ctx context.Context, req promise.Request) promise.Result {
-			runCtx, _ := context.WithTimeout(ctx, node.endTime.Sub(time.Now()))
-			err := node.action(runCtx)
-			return promise.Result{
-				Err: err,
-			}
-		})
-		p.Start(ctx)
-	}
-}
-
 type Schedule struct {
-	e *list.Element
-	action      func(ctx context.Context) error
 	expectStart time.Time
 	endTime     time.Time
+	element     Element
+}
+
+type comparer struct {}
+
+func (c comparer) Descending() bool {
+	return false
+}
+
+func (c comparer) Compare(lhs, rhs interface{}) bool {
+	l := lhs.(*Schedule)
+	r := lhs.(*Schedule)
+	return l.endTime.After(r.endTime)
 }

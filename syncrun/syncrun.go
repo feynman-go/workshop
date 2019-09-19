@@ -101,7 +101,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //	return root.runner.Fork(runner)
 //}
 //
-//func (root *Root) Close() {
+//func (root *Root) Release() {
 //	root.runner.end()
 //}
 //
@@ -157,7 +157,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //}
 //
 //func (runner *Runner) Separate() {
-//	runner.prob.Close()
+//	runner.prob.Release()
 //	runner.rw.Lock()
 //	defer runner.rw.Unlock()
 //	for d := range runner.depOn {
@@ -215,7 +215,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //func (runner *Runner) end() {
 //	runner.rw.Lock()
 //	defer runner.rw.Unlock()
-//	runner.prob.Close()
+//	runner.prob.Release()
 //}
 //
 //func (runner *Runner) run(ctx context.Context) {
@@ -225,11 +225,11 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //	runner.rw.RUnlock()
 //
 //	if fun == nil {
-//		pb.Close()
+//		pb.Release()
 //	} else {
 //		ok := runner.runFunc(ctx)
 //		if !ok {
-//			pb.Close()
+//			pb.Release()
 //		}
 //	}
 //}
@@ -336,7 +336,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //	case statusRunning:
 //		prob.Start()
 //	case statusExit:
-//		prob.Close()
+//		prob.Release()
 //	}
 //}
 //

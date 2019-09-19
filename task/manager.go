@@ -324,21 +324,18 @@ func (svc *Manager) doProcess(ctx context.Context, awaken Awaken) error {
 	if err != nil {
 		return err
 	}
-
-	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
+	
+	p := prob.New(func(ctx context.Context) {
+		var err error
 		if awaken.OverLapped != nil {
 			err = svc.processOverlappedTask(ctx, awaken.OverLapped)
 			if err != nil {
-				return promise.Result{
-					Err: err,
-				}
+				return
 			}
 		}
 		err = svc.processTask(ctx, &awaken.Task)
-		return promise.Result{
-			Err: err,
-		}
-	}, promise.PartitionMiddle(true), promise.EventKeyMiddle(int(h.Sum32())))
+		return
+	})
 
 	svc.ps.setPromise(ctx, awaken.Task.Key, p, svc.option.WaitCloseDuration)
 	return ctx.Err()
@@ -362,7 +359,7 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 	return ctx.Err()
 }
 
-/*func (svc *Manager) Run(ctx context.Context) error {
+/*func (svc *Manager) run(ctx context.Context) error {
 	return svc.runScheduler(ctx)
 }*/
 
@@ -389,19 +386,19 @@ func (svc *Manager) start(ctx context.Context) {
 	}, syncrun.RandRestart(time.Second, 3 * time.Second)))
 	pb.Start()
 	svc.pb = pb
-
 }
+
 type promiseStore struct {
 	m *sync.Map
 }
 
 type promiseWrap struct {
-	rw sync.RWMutex
-	ps *promise.Promise
+	rw     sync.RWMutex
+	pb     *prob.Prob
 	closed bool
 }
 
-func (warp *promiseWrap) ReplacePromise(ctx context.Context, ps *promise.Promise, maxWaitTime time.Duration) {
+func (warp *promiseWrap) ReplacePromise(ctx context.Context, pb *prob.Prob, maxWaitTime time.Duration) {
 	warp.rw.Lock()
 	defer warp.rw.Unlock()
 
@@ -409,15 +406,18 @@ func (warp *promiseWrap) ReplacePromise(ctx context.Context, ps *promise.Promise
 		return
 	}
 
-	old := warp.ps
-	warp.ps = ps
-	if old != nil && !old.IsStarted() && !old.IsClosed() {
-		old.Close()
-		runCtx, _ := context.WithTimeout(ctx, maxWaitTime)
-		old.Wait(runCtx, false)
+	old := warp.pb
+	warp.pb = pb
+	if old != nil && !old.IsStopped() {
+		old.Stop()
+		closeCtx , _ := context.WithTimeout(ctx, maxWaitTime)
+		select {
+		case <- closeCtx.Done():
+		case <- old.Stopped():
+		}
 	}
 	if ctx.Err() == nil {
-		ps.Start(ctx)
+		warp.pb.Start()
 	}
 }
 
@@ -425,14 +425,17 @@ func (warp *promiseWrap) close(ctx context.Context) {
 	if warp.closed {
 		return
 	}
-	if warp.ps != nil {
-		warp.ps.Close()
-		warp.ps.Wait(ctx, false)
+	if warp.pb != nil {
+		warp.pb.Stop()
+		select {
+		case <- warp.pb.Stopped():
+		case <- ctx.Done():
+		}
 	}
 	warp.closed = true
 }
 
-func (store *promiseStore) setPromise(ctx context.Context, taskKey string, p *promise.Promise, maxWaitDuration time.Duration) {
+func (store *promiseStore) setPromise(ctx context.Context, taskKey string, pb *prob.Prob, maxWaitDuration time.Duration) {
 	pw := promiseWrapPool.Get().(*promiseWrap)
 	v, loaded := store.m.LoadOrStore(taskKey, pw)
 
@@ -441,7 +444,7 @@ func (store *promiseStore) setPromise(ctx context.Context, taskKey string, p *pr
 	}
 
 	pw = v.(*promiseWrap)
-	pw.ReplacePromise(ctx, p, maxWaitDuration)
+	pw.ReplacePromise(ctx, pb, maxWaitDuration)
 }
 
 func (store *promiseStore) delete(ctx context.Context, taskKey string) {

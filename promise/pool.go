@@ -18,7 +18,7 @@ type Pool struct {
 	offset  uintptr
 	workers *sync.Map
 	p       *sync.Pool
-	closed  chan struct{} // Close channel to close pool
+	closed  chan struct{} // Release channel to close pool
 }
 
 func NewPool(maxConcurrent int) *Pool {

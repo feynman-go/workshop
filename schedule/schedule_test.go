@@ -12,7 +12,7 @@ func TestScheduleBasic(t *testing.T) {
 	p := promise.NewPool(4)
 
 	s := New(p)
-	go s.Run(context.Background())
+	go s.run(context.Background())
 
 	var callTime time.Time
 	var now = time.Now()
@@ -47,7 +47,7 @@ func TestScheduleInsert(t *testing.T) {
 	p := promise.NewPool(4)
 
 	s := New(p)
-	go s.Run(context.Background())
+	go s.run(context.Background())
 
 	var firstCall, secondCall time.Time
 	var firstStart = time.Now()

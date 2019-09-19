@@ -248,11 +248,11 @@ func (ms *MemoExecRepository) UpdateExecution(ctx context.Context, execution *Ex
 	return ms.store.Set(id, execution)
 }
 
-func (ms *MemoExecRepository) Run(ctx context.Context) error {
+func (ms *MemoExecRepository) run(ctx context.Context) error {
 	var runCtx, cancel = context.WithCancel(ctx)
 	defer cancel()
 
-	return ms.store.Run(runCtx)
+	return ms.store.run(runCtx)
 }*/
 
 //var taskListPool = &sync.Pool{

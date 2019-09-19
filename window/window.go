@@ -124,7 +124,7 @@ func (w *Window) Current() Whiteboard {
 		// handle err
 		w.ClearErr(ctx)
 	} else {
-		w.Close(ctx)
+		w.Release(ctx)
 	}
 */
 func (w *Window) TriggerErr() <- chan struct{} {
