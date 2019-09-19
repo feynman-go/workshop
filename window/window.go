@@ -11,14 +11,13 @@ import (
 type Aggregator interface {
 	Aggregate(ctx context.Context, item Whiteboard, input interface{}) (err error)
 	// return new whiteboard data
-	Trigger(ctx context.Context, acceptErr error, nextSeq uint64) error
+	Trigger(ctx context.Context, nextSeq uint64) error
 }
 
 type Whiteboard struct {
 	StartTime time.Time
 	Seq       uint64
 	Count     uint64
-	AggregateErr error
 	TriggerErr error
 	HasTriggered bool
 	resetChan chan <- struct{}
@@ -64,13 +63,9 @@ func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	if w.current.TriggerErr != nil {
 		return w.current.TriggerErr
 	}
-	if w.current.AggregateErr != nil {
-		return w.current.AggregateErr
-	}
 
 	err := w.aggregator.Aggregate(ctx, w.current, input)
 	if err != nil {
-		w.current.AggregateErr = err
 		return err
 	}
 	w.current.Count ++
@@ -94,7 +89,6 @@ func (w *Window) ClearErr(ctx context.Context) {
 	w.rw.Lock()
 	defer w.rw.Unlock()
 	w.current.TriggerErr = nil
-	w.current.AggregateErr = nil
 	if w.current.HasTriggered { // re trigger after clear err
 		w.handleTriggerOn(ctx, w.current.Seq, true)
 	}
@@ -146,7 +140,7 @@ func (w *Window) handleTriggerOn(ctx context.Context, seq uint64, canRetry bool)
 		resetChan: make(chan struct{}),
 	}
 
-	err := w.aggregator.Trigger(ctx, last.AggregateErr, newBoard.Seq)
+	err := w.aggregator.Trigger(ctx, newBoard.Seq)
 	last.HasTriggered = true
 	if err != nil {
 		last.TriggerErr = err
