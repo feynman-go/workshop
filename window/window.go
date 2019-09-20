@@ -2,161 +2,203 @@ package window
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/syncrun"
+	"fmt"
+	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/pkg/errors"
 	"sync"
 	"time"
 )
 
 type Aggregator interface {
-	Aggregate(ctx context.Context, item Whiteboard, input interface{}) (err error)
-	// return new whiteboard data
-	Trigger(ctx context.Context, nextSeq uint64) error
+	Aggregate(ctx context.Context, input interface{}, item Whiteboard) (err error)
+	OnTrigger(ctx context.Context) error
+}
+
+type EmptyAggregator struct {}
+func (agg EmptyAggregator) Aggregate(ctx context.Context, input interface{}, item Whiteboard) (err error){return nil}
+func (agg EmptyAggregator) OnTrigger(ctx context.Context) error{return nil}
+
+type Wrapper func(Aggregator) Aggregator
+
+type Trigger struct {
+	rw sync.RWMutex
+	triggered bool
+	cn chan struct{}
+}
+
+func (tm *Trigger) Trigger() {
+	tm.rw.Lock()
+	defer tm.rw.Unlock()
+
+	if !tm.triggered {
+		select {
+		case tm.cn <- struct{}{}:
+		default:
+		}
+		tm.triggered = true
+	}
+}
+
+func (tm *Trigger) Triggered() bool {
+	tm.rw.RLock()
+	defer tm.rw.RUnlock()
+	return tm.triggered
 }
 
 type Whiteboard struct {
-	StartTime time.Time
-	Seq       uint64
-	Count     uint64
-	TriggerErr error
+	StartTime    time.Time
+	Seq          uint64
+	TriggerErr   error
 	HasTriggered bool
-	resetChan chan <- struct{}
-}
-
-type Trigger interface {
-	Accept(item Whiteboard, input interface{})
-	Wait(ctx context.Context) (uint64, bool)
-	Reset(nextSeq uint64)
+	Trigger      *Trigger
 }
 
 type Window struct {
-	rw          sync.RWMutex
 	current     Whiteboard
+	needTrigger bool
 	aggregator  Aggregator
-	triggers    []Trigger
 	pb          *prob.Prob
-	triggerChan chan uint64
-	triggerErr chan struct{}
+	triggerChan chan struct{}
+	mx          *mutex.Mutex
 }
 
-func New(ag Aggregator, triggers []Trigger) *Window {
-	return &Window{
+func New(ag Aggregator, wraps ...Wrapper) *Window {
+	triggerChan := make(chan struct{}, 1)
+
+	if ag == nil {
+		ag = EmptyAggregator{}
+	}
+
+	for _, w := range wraps {
+		ag = w(ag)
+	}
+
+	wd := &Window{
 		aggregator: ag,
-		triggers: triggers,
-		triggerChan: make(chan uint64, 0),
-		triggerErr: make(chan struct{}, 1),
+		mx: &mutex.Mutex{},
+		triggerChan: triggerChan,
 		current: Whiteboard {
 			StartTime: time.Now(),
 			Seq: 0,
-			Count: 0,
-			resetChan: make(chan struct{}),
+			Trigger: &Trigger{
+				cn: triggerChan,
+			},
 		},
 	}
+	wd.pb = prob.New(wd.runTriggerHandler)
+	wd.pb.Start()
+	return wd
 }
 
 func (w *Window) Accept(ctx context.Context, input interface{}) error {
-	w.rw.Lock()
-	defer w.rw.Unlock()
+	var retErr error
 
-	w.start(ctx)
+	prob.RunSync(ctx, w.pb, func(ctx context.Context) {
+		if w.mx.Hold(ctx) {
+			defer w.mx.Release()
 
-	if w.current.TriggerErr != nil {
-		return w.current.TriggerErr
-	}
+			if err := w.prepareAccept(ctx); err != nil {
+				retErr = err
+				return
+			}
 
-	err := w.aggregator.Aggregate(ctx, w.current, input)
-	if err != nil {
-		return err
-	}
-	w.current.Count ++
-	w.updateTrigger(w.current, input)
-	return nil
+			err := w.aggregator.Aggregate(ctx, input, w.current)
+			if err != nil {
+				retErr = err
+				return
+			}
+		} else {
+			if ctx.Err() != nil {
+				retErr = ctx.Err()
+				return
+			}
+			retErr = errors.New("hold mutex err")
+			return
+		}
+	})
+	return retErr
+
 }
 
 func (w *Window) Close(ctx context.Context) error {
-	var seq uint64
-	w.rw.Lock()
-	seq = w.current.Seq
-	w.rw.Unlock()
-	w.triggerChan <- seq
-	if w.pb != nil {
+	if w.mx.Hold(ctx) {
+		defer w.mx.Release()
+		w.aggregator.OnTrigger(ctx)
 		w.pb.Stop()
 	}
 	return nil
 }
 
-func (w *Window) ClearErr(ctx context.Context) {
-	w.rw.Lock()
-	defer w.rw.Unlock()
-	w.current.TriggerErr = nil
-	if w.current.HasTriggered { // re trigger after clear err
-		w.handleTriggerOn(ctx, w.current.Seq, true)
-	}
-}
-
-func (w *Window) start(ctx context.Context) bool {
-	if w.pb == nil {
-		w.pb = prob.New(w.run)
-		w.rw.Lock()
-		w.handleTriggerOn(ctx, 0, false)
-		w.rw.Unlock()
-	}
-	return w.pb.Start()
-}
-
-func (w *Window) Current() Whiteboard {
-	w.rw.RLock()
-	defer w.rw.RUnlock()
-	return w.current
-}
-
-/*
-	<- w.Trigger()
-	cur := w.Current()
-
-	if cur.TriggerErr == err... {
-		// handle err
-		w.ClearErr(ctx)
-	} else {
-		w.Release(ctx)
-	}
-*/
-func (w *Window) TriggerErr() <- chan struct{} {
-	return w.triggerErr
-}
-
-func (w *Window) handleTriggerOn(ctx context.Context, seq uint64, canRetry bool) {
-	if seq < w.current.Seq {
-		return
-	}
-	if w.current.HasTriggered && !canRetry {
-		return
-	}
-
-	last := w.current
-	newBoard := Whiteboard {
-		StartTime: time.Now(),
-		Seq:       seq + 1,
-		resetChan: make(chan struct{}),
-	}
-
-	err := w.aggregator.Trigger(ctx, newBoard.Seq)
-	last.HasTriggered = true
-	if err != nil {
-		last.TriggerErr = err
-		w.current = last
-		select {
-		case w.triggerErr <- struct{}{}:
-		default:
+func (w *Window) ClearErr(ctx context.Context) bool {
+	if w.mx.Hold(ctx) {
+		defer w.mx.Release()
+		w.current.TriggerErr = nil
+		if w.current.HasTriggered { // re Trigger after clear err
+			return w.handleTriggerOn(ctx, w.current.Seq, true)
 		}
-		return
+		return true
 	}
-	w.current = newBoard
-	for _, tg := range w.triggers{
-		tg.Reset(newBoard.Seq)
-	}
-	close(last.resetChan)
+	return false
+}
 
+func (w *Window) prepareAccept(ctx context.Context) error {
+	if w.current.TriggerErr != nil {
+		return w.current.TriggerErr
+	}
+	if w.current.Trigger.Triggered() {
+		if w.handleTriggerOn(ctx, w.current.Seq, false) {
+			return nil
+		}
+		return fmt.Errorf("failed to Trigger current %v", w.current.TriggerErr)
+	}
+	return nil
+}
+
+func (w *Window) Current(ctx context.Context) (Whiteboard, bool) {
+	if w.mx.Hold(context.Background()) {
+		defer w.mx.Release()
+		return w.current, true
+	}
+	return Whiteboard{}, false
+}
+
+func (w *Window) handleTriggerOn(ctx context.Context, seq uint64, canRetry bool) bool {
+	var ok bool
+
+	prob.RunSync(ctx, w.pb, func(ctx context.Context) {
+		if seq < w.current.Seq {
+			ok = false
+			return
+		}
+		if w.current.HasTriggered && !canRetry {
+			ok = false
+			return
+		}
+
+		last := w.current
+		newSeq := seq + 1
+		newBoard := Whiteboard {
+			StartTime: time.Now(),
+			Seq:       newSeq,
+			Trigger: &Trigger{
+				cn: w.triggerChan,
+			},
+		}
+
+		err := w.aggregator.OnTrigger(ctx)
+		last.HasTriggered = true
+		if err != nil {
+			last.TriggerErr = err
+			w.current = last
+			ok = false
+			return
+		}
+		w.current = newBoard
+		ok = true
+		return
+	})
+	return ok
 }
 
 func (w *Window) runTriggerHandler(ctx context.Context) {
@@ -164,41 +206,11 @@ func (w *Window) runTriggerHandler(ctx context.Context) {
 		select {
 		case <- ctx.Done():
 			return
-		case seq := <- w.triggerChan:
-			w.rw.Lock()
-			w.handleTriggerOn(ctx, seq, false)
-			w.rw.Unlock()
+		case <- w.triggerChan:
+			if w.mx.Hold(ctx) {
+				w.handleTriggerOn(ctx, w.current.Seq, false)
+				w.mx.Release()
+			}
 		}
 	}
 }
-
-func (w *Window) getResetChan() chan <- struct{}{
-	w.rw.Lock()
-	defer w.rw.Unlock()
-	return w.current.resetChan
-}
-
-func (w *Window) run(ctx context.Context) {
-	fs := []func(ctx context.Context){w.runTriggerHandler }
-	for i := range w.triggers {
-		tg := w.triggers[i]
-		fs = append(fs, func(ctx context.Context) {
-			for ctx.Err() == nil {
-				seq, ok := tg.Wait(ctx)
-				if ok {
-					select {
-					case w.triggerChan <- seq:
-					}
-				}
-			}
-		})
-	}
-	syncrun.Run(ctx, fs...)
-}
-
-func (w *Window) updateTrigger(item Whiteboard, input interface{}) {
-	for _, t := range w.triggers {
-		t.Accept(item, input)
-	}
-}
-

@@ -32,6 +32,7 @@ func Run(ctx context.Context, runner ...func(ctx context.Context)) {
 }
 
 
+
 func FuncWithRandomStart(runFunc func(ctx context.Context) (canRestart bool), restartWait func() time.Duration) func(ctx context.Context) {
 	return func(ctx context.Context) {
 		for ctx.Err() == nil {
@@ -55,6 +56,28 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 		return randtime.RandDuration(min, max)
 	}
 }
+
+
+//type Errors struct {
+//	hasErr bool
+//	errs map[int]error
+//}
+//
+//func (errors Errors) HasErr() bool {
+//	return len(errors.errs) > 0
+//}
+//
+//func (errors Errors) Errors() map[int]error {
+//	return errors.errs
+//}
+//
+//func (errors Errors) GetErr(index int) error {
+//	return errors.errs[index]
+//}
+//
+//func RunAndReturn(ctx context.Context, runner ...func(ctx context.Context) error) Errors {
+//
+//}
 
 
 //func RunByContext(ctx context.Context, runner ...func(ctx context.Context) ) {

@@ -22,8 +22,8 @@ type Notifier struct {
 	stream     MessageStream
 	whiteBoard WhiteBoard
 	publisher  Publisher
-	ag         *aggergator
-	triggers   []window.Trigger
+	ag         *aggregator
+	wrappers   []window.Wrapper
 }
 
 type Option struct {
@@ -35,21 +35,20 @@ func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher, optio
 	ret := &Notifier {
 		stream: stream,
 		whiteBoard: whiteBoard,
-		ag: &aggergator{
+		ag: &aggregator{
 			publisher: publisher,
 		},
-
 	}
 	ret.pb = prob.New(ret.run)
 
-	var triggers []window.Trigger
+	var wrappers []window.Wrapper
 	if option.MaxCount <= 0 {
 		option.MaxCount = 1
 	}
-	triggers = append(triggers, window.NewCounterTrigger(uint64(option.MaxCount)))
+	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxCount)))
 
 	if option.MaxDuration > 0 {
-		triggers = append(triggers, window.NewDurationTrigger(option.MaxDuration))
+		wrappers = append(wrappers, window.DurationWrapper(option.MaxDuration))
 	}
 
 	return ret
@@ -81,7 +80,7 @@ func (notifier *Notifier) run(ctx context.Context) {
 		}()
 
 		notifier.ag.Reset()
-		wd := window.New(notifier.ag, notifier.triggers)
+		wd := window.New(notifier.ag, notifier.wrappers...)
 
 		for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
 			err = wd.Accept(ctx, *msg)
@@ -132,16 +131,15 @@ type MessageStream interface {
 	ResumeFromToken(ctx context.Context, resumeToken string) (Cursor, error)
 }
 
-type aggergator struct {
+type aggregator struct {
 	rw sync.RWMutex
 	msgs []Message
-	seq uint64
 	publisher Publisher
 	wb WhiteBoard
 	lastErr error
 }
 
-func (agg *aggergator) Aggregate(ctx context.Context, item window.Whiteboard, input interface{}) (err error) {
+func (agg *aggregator) Aggregate(ctx context.Context, input interface{}, item window.Whiteboard) (err error) {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
@@ -157,7 +155,7 @@ func (agg *aggergator) Aggregate(ctx context.Context, item window.Whiteboard, in
 	return nil
 }
 
-func (agg *aggergator) Reset() {
+func (agg *aggregator) Reset() {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
@@ -165,10 +163,7 @@ func (agg *aggergator) Reset() {
 	agg.msgs = agg.msgs[:0]
 }
 
-func (agg *aggergator) Trigger(ctx context.Context, acceptErr error, nextSeq uint64) error {
-	if acceptErr != nil {
-		return fmt.Errorf("accept err: %v", acceptErr)
-	}
+func (agg *aggregator) OnTrigger(ctx context.Context) error {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
@@ -192,6 +187,5 @@ func (agg *aggergator) Trigger(ctx context.Context, acceptErr error, nextSeq uin
 			agg.msgs = agg.msgs[:0]
 		}
 	}
-	agg.seq = nextSeq
 	return nil
 }

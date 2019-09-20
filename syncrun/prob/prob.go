@@ -124,19 +124,25 @@ func (prob *Prob) Start() bool {
 	return true
 }
 
-
-func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) {
+func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) bool {
 	select {
+	case <- prob.Stopped():
+		return false
 	case <- ctx.Done():
-		return
+		return false
 	case <- prob.Running():
 		var wg = &sync.WaitGroup{}
 		var runCtx, cancel = context.WithCancel(ctx)
 		wg.Add(1)
+		var res bool
 		go func() {
 			defer cancel()
 			defer wg.Done()
+			if runCtx.Err() != nil {
+				return
+			}
 			f(runCtx)
+			res = true
 		}()
 
 		select {
@@ -145,6 +151,7 @@ func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) {
 		case <- runCtx.Done():
 		}
 		wg.Wait()
+		return res
 	}
 
 }
