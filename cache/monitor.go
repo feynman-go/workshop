@@ -24,11 +24,10 @@ func NewPrometheusMonitor(name string) *PrometheusMonitor {
 	}
 }
 
-func (monitor *PrometheusMonitor) AddFindRecord(key ResourceKey, hit bool, downgrade bool, err error, duration time.Duration) {
+func (monitor *PrometheusMonitor) AddFindRecord(key Request, hit bool, downgrade bool, err error, duration time.Duration) {
 	v := float64(duration) / float64(time.Millisecond)
 	monitor.hv.With(map[string]string{
 		"hit":       fmt.Sprint(hit),
-		"category":  key.Category,
 		"err":       fmt.Sprint(err != nil),
 		"downgrade": fmt.Sprint(downgrade),
 	}).Observe(v)

@@ -64,7 +64,7 @@ func (c *Cursor) ResumeToken() string {
 	return base64.RawStdEncoding.EncodeToString(raw)
 }
 
-type Parser func(raw bson.Raw) (notify.Message, error)
+type Parser func(raw bson.Raw) ([]notify.Message, error)
 
 type MessageStream struct {
 	query bson.D

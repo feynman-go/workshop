@@ -29,15 +29,19 @@ type Notifier struct {
 type Option struct {
 	MaxCount int64
 	MaxDuration time.Duration
+	FailedWait time.Duration
 }
 
 func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher, option Option) *Notifier {
+	agg := &aggregator{
+		wb: whiteBoard,
+		publisher: publisher,
+	}
+
 	ret := &Notifier {
 		stream: stream,
 		whiteBoard: whiteBoard,
-		ag: &aggregator{
-			publisher: publisher,
-		},
+		ag: agg,
 	}
 	ret.pb = prob.New(ret.run)
 
@@ -45,22 +49,20 @@ func New(stream MessageStream, whiteBoard WhiteBoard, publisher Publisher, optio
 	if option.MaxCount <= 0 {
 		option.MaxCount = 1
 	}
-	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxCount)))
 
+	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxCount)))
 	if option.MaxDuration > 0 {
 		wrappers = append(wrappers, window.DurationWrapper(option.MaxDuration))
 	}
 
+	ret.wrappers = wrappers
+	ret.pb.Start()
 	return ret
 }
 
-func (notifier *Notifier) Start(ctx context.Context, restartMax time.Duration, restartMin time.Duration) error {
-	notifier.pb.Start()
-	return nil
-}
 
 func (notifier *Notifier) run(ctx context.Context) {
-	f := syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
 		token, err := notifier.whiteBoard.GetResumeToken(ctx)
 		if err != nil {
 			return true
@@ -79,9 +81,12 @@ func (notifier *Notifier) run(ctx context.Context) {
 			}
 		}()
 
-		notifier.ag.Reset()
 		wd := window.New(notifier.ag, notifier.wrappers...)
 
+		defer func() {
+			closeCtx, _ := context.WithTimeout(context.Background(), 10 * time.Second)
+			wd.Close(closeCtx)
+		}()
 		for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
 			err = wd.Accept(ctx, *msg)
 			if err != nil {
@@ -89,10 +94,9 @@ func (notifier *Notifier) run(ctx context.Context) {
 				break
 			}
 		}
-		return true
-	}, syncrun.RandRestart(time.Second, 5 * time.Second))
 
-	f(ctx)
+		return true
+	}, syncrun.RandRestart(time.Second, 5 * time.Second))(ctx)
 }
 
 func (notifier *Notifier) Close() error {
@@ -136,16 +140,11 @@ type aggregator struct {
 	msgs []Message
 	publisher Publisher
 	wb WhiteBoard
-	lastErr error
 }
 
 func (agg *aggregator) Aggregate(ctx context.Context, input interface{}, item window.Whiteboard) (err error) {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
-
-	if agg.lastErr != nil {
-		return fmt.Errorf("has last err: %v", agg.lastErr)
-	}
 
 	msg, ok := input.(Message)
 	if !ok {
@@ -155,37 +154,27 @@ func (agg *aggregator) Aggregate(ctx context.Context, input interface{}, item wi
 	return nil
 }
 
-func (agg *aggregator) Reset() {
-	agg.rw.Lock()
-	defer agg.rw.Unlock()
-
-	agg.lastErr = nil
-	agg.msgs = agg.msgs[:0]
-}
-
 func (agg *aggregator) OnTrigger(ctx context.Context) error {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
-	if agg.lastErr == nil {
-		if len(agg.msgs) != 0 {
-			lastToken := agg.publisher.Publish(ctx, agg.msgs)
-			if lastToken == "" {
-				agg.lastErr = errors.New("not support")
-			} else {
-				err := agg.wb.StoreResumeToken(ctx, lastToken)
-				if err == nil {
-					if lastToken != agg.msgs[len(agg.msgs) - 1].Token {
-						agg.lastErr = errors.New("bad message notify")
-					}
-				} else {
-					agg.lastErr = fmt.Errorf("store resume token err: %v", err)
+	if len(agg.msgs) != 0 {
+		lastToken := agg.publisher.Publish(ctx, agg.msgs)
+		if lastToken == "" {
+			return errors.New("publisher no valid token")
+		} else {
+			err := agg.wb.StoreResumeToken(ctx, lastToken)
+			if err == nil {
+				if lastToken != agg.msgs[len(agg.msgs) - 1].Token {
+					return errors.New("bad message notify")
 				}
+			} else {
+				return fmt.Errorf("store resume token err: %v", err)
 			}
 		}
-		if agg.msgs != nil {
-			agg.msgs = agg.msgs[:0]
-		}
+	}
+	if agg.msgs != nil {
+		agg.msgs = agg.msgs[:0]
 	}
 	return nil
 }

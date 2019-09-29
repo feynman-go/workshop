@@ -199,23 +199,27 @@ func (er *Result) Finish() {
 	return
 }
 
-func (er *Result) WaitAndReDo(wait time.Duration) {
+func (er *Result) WaitAndReDo(wait time.Duration) *Result {
 	er.Continue = true
 	er.NextExec = er.NextExec.SetExpectStartTime(time.Now().Add(wait))
+	return er
 }
 
 // keep current task alive and return
-func (er *Result) ReturnWithLive(keepLive time.Duration) {
+func (er *Result) ReturnWithLive(keepLive time.Duration) *Result {
 	er.Continue = true
 	er.NextExec = er.NextExec.SetCompensateDuration(keepLive)
+	return er
 }
 
-func (er *Result) SetMaxDuration(maxDuration time.Duration) {
+func (er *Result) SetMaxDuration(maxDuration time.Duration) *Result {
 	er.NextExec = er.NextExec.SetMaxExecDuration(maxDuration)
+	return er
 }
 
-func (er *Result) SetMaxRecover(maxRecover int32) {
+func (er *Result) SetMaxRecover(maxRecover int32) *Result {
 	er.NextExec = er.NextExec.SetMaxRecoverCount(maxRecover)
+	return er
 }
 
 type Summery struct {

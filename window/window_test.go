@@ -162,3 +162,24 @@ func TestWindowInvokeCount(t *testing.T) {
 		t.Fatal("bad triggered count", triggered)
 	}
 }
+
+
+
+func TestWindowInvokeZeroCount(t *testing.T) {
+	var triggered int32
+	wd := New(MockAggregator{
+		OnTriggerFunc: func(ctx context.Context) error {
+			atomic.AddInt32(&triggered, 1)
+			return nil
+		},
+	}, CounterWrapper(0))
+	err := wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if triggered != 1 {
+		t.Fatal("bad triggered count", triggered)
+	}
+}

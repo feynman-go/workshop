@@ -107,7 +107,6 @@ func (ca *CountAggregator) Aggregate(ctx context.Context, input interface{}, ite
 	ca.seq = item.Seq
 	ca.count ++
 	ct := ca.count
-
 	if ca.maxCount <= ct {
 		item.Trigger.Trigger()
 	}

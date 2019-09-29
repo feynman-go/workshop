@@ -44,6 +44,10 @@ func (elector *MemoElector) KeepLive(ctx context.Context, keepLive KeepLive) err
 	}
 
 	if elector.e.Sequence < keepLive.Sequence {
+		if elector.e.ElectID != keepLive.ElectID {
+			return nil
+		}
+
 		elector.e = Election{
 			Sequence: keepLive.Sequence,
 			ElectID: keepLive.ElectID,

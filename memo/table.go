@@ -79,7 +79,7 @@ func (tb *Table) Fetch(key Key, def Value) (value Value, loaded bool) {
 	)
 	for {
 		tb.rw.Lock()
-		ctn, loaded = tb.load(key,  def)
+		ctn, loaded = tb.load(key, def, tb.keepLiveDuration)
 		seq := ctn.GetSeq()
 		tb.rw.Unlock()
 		if loaded {
@@ -95,9 +95,15 @@ func (tb *Table) Fetch(key Key, def Value) (value Value, loaded bool) {
 	return
 }
 
-func (tb *Table) Set(key, value Value) {
+func (tb *Table) Set(key, value Value, option ...SetOption) {
+	o := mergeSetOption(option)
+	keepLiveDuration := tb.keepLiveDuration
+	if o.KeepLiveDuration != nil {
+		keepLiveDuration = *o.KeepLiveDuration
+	}
+
 	tb.rw.Lock()
-	ctn, loaded := tb.load(key, value)
+	ctn, loaded := tb.load(key, value, keepLiveDuration)
 	seq := ctn.GetSeq()
 	tb.rw.Unlock()
 	if !loaded {
@@ -105,7 +111,14 @@ func (tb *Table) Set(key, value Value) {
 	}
 }
 
-func (tb *Table) KeepLive(key interface{}) bool {
+
+func (tb *Table) KeepLive(key interface{}, option ...KeepLiveOption) bool {
+	o := mergeKeepLiveOption(option)
+	duration := tb.keepLiveDuration
+	if o.Duration != nil {
+		duration = *o.Duration
+	}
+
 	tb.rw.RLock()
 	e := tb.mp[key]
 	if e == nil {
@@ -117,7 +130,7 @@ func (tb *Table) KeepLive(key interface{}) bool {
 	tb.moveToEnd(e)
 	tb.rw.RUnlock()
 
-	ctn.KeepLive(tb.keepLiveDuration, seq)
+	ctn.KeepLive(duration, seq)
 	return false
 }
 
@@ -141,21 +154,22 @@ func (tb *Table) moveToEnd(e *list.Element) {
 	tb.ll.MoveToBack(e)
 }
 
-func (tb *Table) load(key Key, data Value) (ctn *container, loaded bool) {
+func (tb *Table) load(key Key, data Value, keepLive time.Duration) (ctn *container, loaded bool) {
 	e := tb.mp[key]
 	if e == nil {
-		ctn = tb.add(key, data)
+		ctn = tb.add(key, data, keepLive)
 	} else {
 		loaded = true
 		ctn = e.Value.(*container)
+		ctn.KeepLive(keepLive, ctn.GetSeq())
 		tb.moveToEnd(e)
 	}
 
 	return
 }
 
-func (tb *Table) add(key Key, data Value) *container {
-	ctn := tb.newContainer(key, data)
+func (tb *Table) add(key Key, data Value, keepLive time.Duration) *container {
+	ctn := tb.newContainer(key, data, keepLive)
 	e := tb.ll.PushBack(ctn)
 	tb.mp[key] = e
 
@@ -205,7 +219,7 @@ func (tb *Table) releaseContainer(ctn *container, seq uint64) bool {
 }
 
 
-func (tb *Table) newContainer(key Key, value Value) *container{
+func (tb *Table) newContainer(key Key, value Value, keepLive time.Duration) *container{
 	ctn := ctnPool.Get().(*container)
 	tb.seq ++
 	ctn.seq = tb.seq
@@ -216,8 +230,8 @@ func (tb *Table) newContainer(key Key, value Value) *container{
 		ctn.timer.Stop()
 	}
 	ctn.table = tb
-	if tb.keepLiveDuration != 0 {
-		ctn.liveTime = time.Now().Add(tb.keepLiveDuration)
+	if keepLive != 0 {
+		ctn.liveTime = time.Now().Add(keepLive)
 	}
 	return ctn
 }
@@ -336,4 +350,44 @@ var ctnPool = &sync.Pool{
 
 		}
 	},
+}
+
+type SetOption struct {
+	KeepLiveDuration *time.Duration
+}
+
+func (opt SetOption) SetKeepLive(duration time.Duration) SetOption {
+	ret := opt
+	ret.KeepLiveDuration = &duration
+	return ret
+}
+
+func mergeSetOption(option []SetOption) SetOption {
+	ret := SetOption{}
+	for _, o := range option {
+		if o.KeepLiveDuration != nil {
+			ret.KeepLiveDuration = o.KeepLiveDuration
+		}
+	}
+	return ret
+}
+
+type KeepLiveOption struct {
+	Duration *time.Duration
+}
+
+func (opt KeepLiveOption) SetDuration(duration time.Duration) KeepLiveOption {
+	ret := opt
+	ret.Duration = &duration
+	return ret
+}
+
+func mergeKeepLiveOption(option []KeepLiveOption) KeepLiveOption {
+	ret := KeepLiveOption{}
+	for _, o := range option {
+		if o.Duration != nil {
+			ret.Duration = o.Duration
+		}
+	}
+	return ret
 }

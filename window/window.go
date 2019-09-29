@@ -130,6 +130,10 @@ func (w *Window) Close(ctx context.Context) error {
 	return nil
 }
 
+func (w *Window) Closed() chan <- struct{} {
+	return w.pb.Stopped()
+}
+
 func (w *Window) ClearErr(ctx context.Context) bool {
 	if w.mx.Hold(ctx) {
 		defer w.mx.Release()

@@ -213,7 +213,7 @@ func TestOverLap(t *testing.T) {
 	if ct := atomic.LoadInt32(&start); ct != 2 {
 		t.Fatal("start count expect 2， but", ct)
 	}
-	if ct := atomic.LoadInt32(&end); ct != 2 {
+	if ct := atomic.LoadInt32(&end); ct != 1 {
 		t.Fatal("end count expect 1， but", ct)
 	}
 

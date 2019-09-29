@@ -48,14 +48,17 @@ type TaskScheduler struct {
 	hashPartition func(taskKey string) int16
 }
 
-func NewTaskScheduler(database *mongo.Database, col string, hashPartition func(taskKey string) int16) *TaskScheduler {
-	return &TaskScheduler{
+func NewTaskScheduler(database *mongo.Database, col string, partitions map[leader.PartitionID]*leader.Member, hashPartition func(taskKey string) int16) *TaskScheduler {
+	scheduler := &TaskScheduler{
 		col: col,
 		timers: map[string]*timerInfo{},
 		ch: make(chan taskDoc),
 		database: database,
 		hashPartition: hashPartition,
 	}
+
+	scheduler.leaders = leader.NewPartitionLeaders(partitions, scheduler.runPartition)
+	return scheduler
 }
 
 func (ts *TaskScheduler) ScheduleTask(ctx context.Context, tk task.Task, overlap bool) (task.Task, error) {
@@ -158,14 +161,7 @@ func(ts *TaskScheduler) WaitTaskAwaken(ctx context.Context) (awaken task.Awaken,
 }
 
 func (ts *TaskScheduler) start() {
-	f := syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
-		ts.leaders.SyncLeader(context.Background(), func(ctx context.Context, pid leader.PartitionID) {
-			ts.runPartition(ctx, pid)
-		})
-		return true
-	}, syncrun.RandRestart(time.Second, 3 * time.Second))
-
-	ts.pb = prob.New(f)
+	ts.leaders.Start()
 	ts.pb.Start()
 }
 

@@ -139,8 +139,8 @@ func (mgo *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, er
 
 			cs, err := mgo.database.Collection(mgo.col).Watch(runCtx, pipeline,
 				options.ChangeStream().SetFullDocument(options.UpdateLookup),
-				//options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
-				//options.ChangeStream().SetResumeAfter(mgo.getResumeToken()),
+				options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
+				options.ChangeStream().SetResumeAfter(mgo.getResumeToken()),
 			)
 
 			if err != nil {

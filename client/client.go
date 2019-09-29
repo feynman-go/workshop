@@ -2,239 +2,234 @@ package client
 
 import (
 	"context"
-	"errors"
+	"github.com/feynman-go/workshop/breaker"
+	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/promise"
-	"github.com/valyala/fastrand"
-	"sync"
-	"time"
+	"github.com/feynman-go/workshop/promise/limit"
+	"github.com/feynman-go/workshop/promise/metric"
+	"github.com/feynman-go/workshop/promise/tracer"
+	"github.com/pkg/errors"
+	"golang.org/x/time/rate"
+	"runtime"
+	"sync/atomic"
 )
 
-const (
-	MiddleNameWaitRetry = "wait-to-retry"
-)
-
-type DoOption struct {
-	retry      func(err error) bool
-	timeOut    time.Duration
-	handler    func(ctx context.Context) error
-	handleFail func(err error) error
+type Option struct {
+	ParallelCount    *int
+	LimitEverySecond *float64
+	Breaker          *breaker.StatusConfig
+	QueueAction      *bool
+	TracerName       *string
+	MetricName 		 *string
 }
 
-type ExecuteResult struct {
-	Try     int
-	Recover int
-	Err     error
+func (opt Option) SetParallelCount(count int) Option {
+	opt.ParallelCount = &count
+	return opt
+}
+
+func (opt Option) SetLimiter(countPerSecond float64) Option {
+	opt.LimitEverySecond = &countPerSecond
+	return opt
+}
+
+func (opt Option) SetBreaker(config breaker.StatusConfig) Option {
+	opt.Breaker = &config
+	return opt
+}
+
+func (opt Option) SetTracerName(name string) Option {
+	opt.TracerName = &name
+	return opt
+}
+
+func (opt Option) SetMetricName(name string) Option {
+	opt.MetricName = &name
+	return opt
+}
+
+// ordered request by partition id
+func (opt Option) SetOrderedRequest(queue bool) Option {
+	opt.QueueAction = &queue
+	return opt
 }
 
 type Client struct {
-	promisePool  *promise.Pool
-	resourcePool ResourcePool
+	name          string
+	mx            *mutex.Mutex
+	closed        int32
+	limiter       *rate.Limiter
+	breakerStatus *breaker.Status
+	breakerConfig breaker.StatusConfig
+	pool          *promise.Pool
+	agent         Agent
+	option        Option
+	middles       []promise.Middle
 }
 
-func New(promisePool *promise.Pool, resourcePool ResourcePool) *Client {
-	return &Client{
-		promisePool, resourcePool,
+func NewClient(agent Agent, option Option) *Client {
+	option = completeOption(option)
+	clt :=  &Client{
+		option: option,
+		mx: new(mutex.Mutex),
+		pool: promise.NewPool(*option.ParallelCount),
+		agent: agent,
+	}
+
+	if option.LimitEverySecond != nil {
+		clt.limiter = rate.NewLimiter(rate.Limit(*option.LimitEverySecond), *option.ParallelCount + 1)
+	}
+
+	if option.Breaker != nil {
+		clt.breakerStatus = breaker.NewStatus(*option.Breaker)
+	}
+
+	clt.setupMiddles()
+	return clt
+}
+
+func (client *Client) setupMiddles() {
+	mids := []promise.Middle{}
+	if client.limiter != nil {
+		mids = append(mids, )
+	}
+
+	if client.breakerStatus != nil {
+		mids = append(mids, promise.WrapProcess("breaker", func(f promise.ProcessFunc) promise.ProcessFunc {
+			return limit.WrapWithBreakerStatus(client.breakerStatus, f)
+		}))
+	}
+
+	if client.limiter != nil {
+		mids = append(mids, promise.WrapProcess("limit", func(f promise.ProcessFunc) promise.ProcessFunc {
+			return limit.WrapWithRateLimit(client.limiter, f)
+		}))
+	}
+
+	if client.option.TracerName != nil {
+		tc := tracer.OpenTracer {
+			Name: *client.option.TracerName,
+			RecordHead: false,
+		}
+		mids = append(mids, promise.WrapProcess("tracer", tc.Wrap))
+	}
+
+	if client.option.MetricName != nil {
+		m := metric.NewPromMetric(*client.option.MetricName, nil)
+		mids = append(mids, promise.WrapProcess("metric", m.Wrap))
+	}
+
+	client.middles = mids
+}
+
+func (client *Client) Reset(ctx context.Context) error {
+	if atomic.LoadInt32(&client.closed) > 0 {
+		return errors.New("closed")
+	}
+
+	if client.mx.Hold(ctx) {
+		defer client.mx.Release()
+		if atomic.LoadInt32(&client.closed) > 0  {
+			return errors.New("closed")
+		}
+		return client.agent.Reset(ctx)
+	} else {
+		return ctx.Err()
 	}
 }
 
-type Action struct {
-	Partition    bool
-	PartitionKey int
-	Do           func(ctx context.Context, resource *Resource) error
-	Recover      func(ctx context.Context, resource *Resource, err error) (wait time.Duration, ok bool)
-	HandleFail   func(ctx context.Context, err error)
-	MaxTimeOut   time.Duration // zero is useless
-	MinTimeOut   time.Duration // zero is useless
-}
-
-func (manager *Client) Do(ctx context.Context, action Action) ExecuteResult {
-	var er = &ExecuteResult{}
-
-	process, opts := manager.buildProcess(action, er)
-	p := promise.NewPromise(manager.promisePool, process, opts...)
-
-	p.Recover(manager.buildRecoverProcess(action, er)).HandleException(manager.buildFailedProcess(action, er))
-	_, err := p.Get(ctx, true)
-	if err != nil {
-		er.Err = err
+func (client *Client) Close(ctx context.Context) error {
+	if atomic.LoadInt32(&client.closed) > 0 {
+		return errors.New("closed")
 	}
-	return *er
-}
 
-func (manager *Client) buildProcess(action Action, er *ExecuteResult) (promise.ProcessFunc, []promise.Middle) {
-	return func(ctx context.Context, request promise.Request) promise.Result {
-			timeout := manager.getRandomTimeout(action)
-			if timeout != 0 {
-				ctx, _ = context.WithTimeout(ctx, timeout)
-			}
-			res, err := manager.resourcePool.Get(ctx, action.Partition, action.PartitionKey)
-			if err != nil {
-				return promise.Result{
-					Err: ErrGetResource,
-				}
-			}
-			if action.Do != nil {
-				er.Try++
-				err = action.Do(ctx, res)
-			}
-			if err == nil {
-				res.PutBack(false)
-			}
-			return promise.Result{
-				Err:     err,
-				Payload: res,
-			}
-		}, []promise.Middle{
-			promise.EventKeyMiddle(action.PartitionKey).WithInheritable(true),
-			promise.PartitionMiddle(action.Partition).WithInheritable(true),
-			promise.WaitMiddle(func(ctx context.Context, request promise.Request) error {
-				payload, ok := request.LastPayload().(recoverPayload)
-				if !ok {
-					return nil
-				}
-				if payload.waitTime != 0 {
-					return promise.WaitTime(ctx, payload.waitTime)
-				}
-				return nil
-			}),
+	if client.mx.Hold(ctx) {
+		defer client.mx.Release()
+		if atomic.LoadInt32(&client.closed) > 0 {
+			return errors.New("closed")
 		}
-}
-
-type recoverPayload struct {
-	waitTime time.Duration
-}
-
-func (manager *Client) buildRecoverProcess(action Action, er *ExecuteResult) promise.ProcessFunc {
-	return func(ctx context.Context, request promise.Request) promise.Result {
-		res, ok := request.LastPayload().(*Resource)
-		if ok {
-			defer func() {
-				if res.Live() {
-					res.PutBack(true)
-				}
-			}()
+		err := client.agent.Close(ctx)
+		if err != nil {
+			return err
 		}
-		timeout := manager.getRandomTimeout(action)
-		if timeout != 0 {
-			ctx, _ = context.WithTimeout(ctx, timeout)
+		if !atomic.CompareAndSwapInt32(&client.closed, 0, 1) {
+			return errors.New("closed")
 		}
-
-		if action.Recover == nil { // do retry
-			return promise.Result{
-				Err: request.LastErr(),
-			}
-		}
-		er.Recover++
-		wait, ok := action.Recover(ctx, res, request.LastErr())
-		if !ok {
-			return promise.Result{
-				Err: request.LastErr(),
-			}
-		}
-		return promise.Result{
-			Payload: recoverPayload{
-				waitTime: wait,
-			},
-		}
-	}
-}
-
-func (manager *Client) buildFailedProcess(action Action, er *ExecuteResult) promise.ProcessFunc {
-	return func(ctx context.Context, request promise.Request) promise.Result {
-		if action.HandleFail == nil {
-			return promise.Result{
-				Err: request.LastErr(),
-			}
-		}
-		action.HandleFail(ctx, request.LastErr())
-		return promise.Result{
-			Err: request.LastErr(),
-		}
-	}
-}
-func (manager *Client) getRandomTimeout(action Action) time.Duration {
-	return time.Duration(fastrand.Uint32n(uint32((action.MaxTimeOut-action.MinTimeOut)/time.Millisecond)) + uint32(action.MinTimeOut/time.Millisecond))
-}
-
-type ResourcePool interface {
-	Get(ctx context.Context, partition bool, partitionKey int) (*Resource, error)
-}
-
-type Resource struct {
-	v       interface{}
-	recycle func(abnormal bool)
-	rw      sync.RWMutex
-	pusBack bool
-}
-
-func NewResource(recycle func(abnormal bool), v interface{}) *Resource {
-	return &Resource{
-		v:       v,
-		recycle: recycle,
-	}
-}
-
-func (res *Resource) Live() bool {
-	res.rw.RLock()
-	defer res.rw.RUnlock()
-	if res.pusBack {
-		return false
-	}
-	return true
-}
-
-func (res *Resource) Get() interface{} {
-	res.rw.RLock()
-	defer res.rw.RUnlock()
-	if res.pusBack {
 		return nil
+	} else {
+		return ctx.Err()
 	}
-	return res.v
 }
 
-func (res *Resource) PutBack(abnormal bool) {
-	res.rw.RLock()
-	defer res.rw.RUnlock()
-	if res.pusBack {
-		return
-	}
-	if res.recycle != nil {
-		res.recycle(abnormal)
-	}
-	res.v = nil
-	res.pusBack = true
+func (client *Client) Closed() bool {
+	return atomic.LoadInt32(&client.closed) == 1
 }
 
-var ErrGetResource = errors.New("get resource err")
-var ErrResourceAbnormal = errors.New("get resource abnormal")
-
-/**
-help function to build default function
-
-*/
-const (
-	DefaultMinTimeOut = 500 * time.Millisecond
-	DefaultMaxTimeOut = time.Second
-)
-
-func DefaultAction(do func(ctx context.Context, resource *Resource) error) Action {
-	var maxCount int
-	action := Action{
-		Partition:    false,
-		PartitionKey: 1,
-		Do:           do,
-		Recover: func(ctx context.Context, resource *Resource, err error) (time.Duration, bool) {
-			if resource != nil {
-				resource.PutBack(true)
-			}
-			maxCount++
-			if maxCount >= 3 {
-				return 0, false
-			}
-			return time.Second, true
-		},
-		MaxTimeOut: DefaultMaxTimeOut,
-		MinTimeOut: DefaultMinTimeOut,
+func (client *Client) Do(ctx context.Context, operation func(ctx context.Context, agent Agent) error, opts ...ActionOption) error {
+	if atomic.LoadInt32(&client.closed) > 0 {
+		return errors.New("closed")
 	}
-	return action
+
+	opt := mergeActionOption(opts)
+
+	p := promise.NewPromise(client.pool, func(ctx context.Context, req promise.Request) promise.Result {
+		err := operation(ctx, client.agent)
+		return promise.Result{
+			Err: err,
+		}
+	}, client.getMiddles(opt)...)
+
+	p.Start(ctx)
+	return p.Wait(ctx, true)
+}
+
+func (client *Client) getMiddles(opt ActionOption) []promise.Middle {
+	var part int
+	if opt.PartitionID != nil {
+		part =  *opt.PartitionID
+	}
+
+	mids := []promise.Middle{promise.EventKeyMiddle(part)}
+	return append(mids, client.middles...)
+}
+
+type Agent interface {
+	Reset(ctx context.Context) error
+	Close(ctx context.Context) error
+}
+
+type ActionOption struct {
+	PartitionID *int
+}
+
+func (opt ActionOption) SetPartition(partition int) ActionOption {
+	opt.PartitionID = &partition
+	return opt
+}
+
+func mergeActionOption(actOption []ActionOption) ActionOption {
+	opt := ActionOption{}
+	for _, a := range actOption {
+		if a.PartitionID != nil {
+			opt = opt.SetPartition(*a.PartitionID)
+		}
+	}
+	return opt
+}
+
+func IsRateLimiter(err error) bool {
+	//TODO
+	return false
+}
+
+func IsBreakerLimiter(err error) bool {
+	//TODO
+	return false
+}
+
+func completeOption(option Option) Option {
+	if option.ParallelCount == nil {
+		option.SetParallelCount(runtime.GOMAXPROCS(0))
+	}
+	return option
 }

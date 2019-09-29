@@ -44,7 +44,7 @@ func (prob *Prob) Stop() {
 	}
 }
 
-func (prob *Prob) Stopping() bool {
+func (prob *Prob) StopAccepted() bool {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 

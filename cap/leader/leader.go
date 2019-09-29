@@ -25,29 +25,25 @@ type Member struct {
 	electFactory ElectionFactory
 	tasks        *task.Manager
 	option       Option
-
-	pb *prob.Prob
-	onFollwerChan chan struct{}
-	onLeaderChan  chan struct{}
+	pb             *prob.Prob
+	onFollowerChan chan struct{}
+	onLeaderChan   chan struct{}
 }
 
 func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Member {
 	var mb = &Member{
-		elector:       elector,
-		electFactory:  electFactory,
-		option:        option,
-		onFollwerChan: make(chan struct{}),
-		onLeaderChan:  make(chan struct{}),
+		elector:        elector,
+		electFactory:   electFactory,
+		option:         option,
+		onFollowerChan: make(chan struct{}),
+		onLeaderChan:   make(chan struct{}),
 	}
 
-	close(mb.onFollwerChan)
+	close(mb.onFollowerChan)
 
 	mb.tasks = task.NewManager(
 		task.NewMemoScheduler(5 * time.Second),
-		task.FuncExecutor(func(cb task.Context) task.Result {
-			res := mb.process(cb)
-			return res
-		}),
+		task.FuncExecutor(mb.process),
 		task.DefaultManagerOption(),
 	)
 	return mb
@@ -55,7 +51,6 @@ func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Me
 
 // block and run do until leader, return if not leader
 func (mb *Member) SyncLeader(ctx context.Context, do func(ctx context.Context)) {
-
 	for {
 		select {
 		case <- ctx.Done():
@@ -99,7 +94,7 @@ func (mb *Member) getWaitChan() (updateChan <- chan struct{}, waitFollower<- cha
 	mb.rw.RLock()
 	defer mb.rw.RUnlock()
 
-	return mb.onLeaderChan, mb.onFollwerChan
+	return mb.onLeaderChan, mb.onFollowerChan
 }
 
 func (mb *Member) GetInfo() MemberInfo {
@@ -152,7 +147,7 @@ func (mb *Member) startKeepLive(ctx context.Context) error {
 	})
 }
 
-func (mb *Member) process(ctx context.Context) task.Result {
+func (mb *Member) process(ctx task.Context, result *task.Result)  {
 	var delta time.Duration
 	info := mb.GetInfo()
 	if info.IsLeader {
@@ -165,12 +160,9 @@ func (mb *Member) process(ctx context.Context) task.Result {
 		log.Println("did start elect next:", time.Now().Add(delta))
 	}
 
-	return task.Result{
-		NextExec: task.ExecOption{}.
-			SetExpectStartTime(time.Now().Add(delta)).
-			SetMaxExecDuration(mb.getElectionDuration()).
-			SetMaxRecoverCount(0),
-	}
+	result.WaitAndReDo(delta)
+	result.SetMaxDuration(mb.getElectionDuration())
+	result.SetMaxRecover(0)
 }
 
 func (mb *Member) getKeepLiveDuration() time.Duration {
@@ -217,14 +209,14 @@ func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 		case <- mb.onLeaderChan:
 		default:
 			close(mb.onLeaderChan)
-			mb.onFollwerChan = make(chan struct{})
+			mb.onFollowerChan = make(chan struct{})
 		}
 	} else {
 		mb.info.IsLeader = false
 		select {
-		case <- mb.onFollwerChan:
+		case <- mb.onFollowerChan:
 		default:
-			close(mb.onFollwerChan)
+			close(mb.onFollowerChan)
 			mb.onLeaderChan = make(chan struct{})
 		}
 	}

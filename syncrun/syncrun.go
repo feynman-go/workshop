@@ -89,7 +89,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //			return false
 //		})
 //	}
-//	rt.Start()
+//	rt.StartExec()
 //	<- rt.Closed()
 //}
 //
@@ -116,7 +116,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //	return root.runner
 //}
 //
-//func (root *Root) Start() {
+//func (root *Root) StartExec() {
 //	root.runner.port.notifyUpdate(nil, true)
 //}
 //
@@ -357,7 +357,7 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 //	case statusInit:
 //		prob.Stop() // may never happen
 //	case statusRunning:
-//		prob.Start()
+//		prob.StartExec()
 //	case statusExit:
 //		prob.Release()
 //	}

@@ -3,6 +3,7 @@ module github.com/feynman-go/workshop
 go 1.12
 
 require (
+	github.com/MauriceGit/skiplist v0.0.0-20181208093031-38aa714e3f14
 	github.com/Workiva/go-datastructures v1.0.50 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/gogo/protobuf v1.3.0 // indirect
@@ -16,6 +17,7 @@ require (
 	github.com/opentracing/opentracing-go v1.1.0
 	github.com/pkg/errors v0.8.0
 	github.com/prometheus/client_golang v1.1.0
+	github.com/stretchr/testify v1.3.0
 	github.com/tidwall/pretty v1.0.0 // indirect
 	github.com/valyala/fastrand v1.0.0
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c // indirect

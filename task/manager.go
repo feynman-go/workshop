@@ -56,7 +56,7 @@ type Manager struct {
 	pool      *promise.Pool
 	executor  Executor
 	scheduler Scheduler
-	ps        *promiseStore
+	ws        *runnerStore
 	pb        *prob.Prob
 	option    ManagerOption
 }
@@ -69,8 +69,8 @@ func NewManager(scheduler Scheduler, executor Executor, opt ManagerOption) *Mana
 		pool:               p,
 		scheduler:          scheduler,
 		option: opt,
-		ps: &promiseStore {
-			m: &sync.Map{},
+		ws: &runnerStore{
+			runners: map[string]*runner{},
 		},
 	}
 	ret.start(context.Background())
@@ -215,7 +215,7 @@ func (svc *Manager) processOverlappedTask(ctx context.Context, task *Task) error
 	if !task.Execution.Available {
 		return nil
 	}
-	svc.ps.delete(ctx, task.Key)
+	svc.ws.delete(ctx, task.Key)
 	return nil
 }
 
@@ -289,8 +289,8 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 		return
 	}
 
-	// todo to imply
-	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
+	worker := svc.ws.fetchWorker(task.Key)
+	worker.StartExec(ctx, func(ctx context.Context) {
 		var res = &Result{}
 		res.Finish()
 
@@ -300,11 +300,10 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 			task:   t,
 		}, res)
 		err = svc.TaskCallback(ctx, t, *res)
-		return promise.Result{
-			Err: err,
+		if err != nil {
+			log.Println("task call back err:", err)
 		}
-	})
-	svc.ps.setPromise(ctx, task.Key, p, svc.option.WaitCloseDuration)
+	}, svc.option.WaitCloseDuration)
 	return
 }
 
@@ -312,11 +311,12 @@ func (svc *Manager) closeTask(ctx context.Context, t *Task) {
 	if svc.scheduler.CloseTaskSchedule(ctx, *t) == nil {
 		//TODO close memory
 		runCtx, _ := context.WithTimeout(ctx, svc.option.WaitCloseDuration)
-		svc.ps.delete(runCtx, t.Key)
+		svc.ws.delete(runCtx, t.Key)
 	}
 }
 
 func (svc *Manager) doProcess(ctx context.Context, awaken Awaken) error {
+
 	h := hashPool.Get().(hash.Hash32)
 	defer hashPool.Put(h)
 	h.Reset()
@@ -324,20 +324,24 @@ func (svc *Manager) doProcess(ctx context.Context, awaken Awaken) error {
 	if err != nil {
 		return err
 	}
-	
-	p := prob.New(func(ctx context.Context) {
+
+	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
 		var err error
 		if awaken.OverLapped != nil {
 			err = svc.processOverlappedTask(ctx, awaken.OverLapped)
 			if err != nil {
-				return
+				return promise.Result{
+					Err: err,
+				}
 			}
 		}
 		err = svc.processTask(ctx, &awaken.Task)
-		return
-	})
+		return promise.Result{
+			Err: err,
+		}
+	}, promise.PartitionMiddle(true), promise.EventKeyMiddle(int(h.Sum32())))
 
-	svc.ps.setPromise(ctx, awaken.Task.Key, p, svc.option.WaitCloseDuration)
+	p.Start(ctx)
 	return ctx.Err()
 }
 
@@ -352,7 +356,7 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 		}
 		err = svc.doProcess(ctx, awaken)
 		if err != nil {
-			log.Println("process task err:", err)
+			log.Println("executor task err:", err)
 			continue
 		}
 	}
@@ -388,26 +392,63 @@ func (svc *Manager) start(ctx context.Context) {
 	svc.pb = pb
 }
 
-type promiseStore struct {
-	m *sync.Map
+type runnerStore struct {
+	rw      sync.RWMutex
+	runners map[string]*runner
 }
 
-type promiseWrap struct {
-	rw     sync.RWMutex
-	pb     *prob.Prob
-	closed bool
+func (store *runnerStore) fetchWorker(taskKey string) *runner {
+	store.rw.RLock()
+	worker := store.runners[taskKey]
+	store.rw.RUnlock()
+	if worker != nil {
+		return worker
+	}
+
+	store.rw.Lock()
+	defer store.rw.Unlock()
+
+	store.runners[taskKey] = &runner{}
+	return store.runners[taskKey]
 }
 
-func (warp *promiseWrap) ReplacePromise(ctx context.Context, pb *prob.Prob, maxWaitTime time.Duration) {
+func (store *runnerStore) delete(ctx context.Context, taskKey string) {
+	store.rw.Lock()
+	worker := store.runners[taskKey]
+	delete(store.runners, taskKey)
+	store.rw.Unlock()
+
+	if worker != nil {
+		worker.close(ctx)
+	}
+}
+
+
+type runner struct {
+	rw          sync.RWMutex
+	executor    *prob.Prob
+}
+
+func (warp *runner) close(ctx context.Context) {
+	warp.rw.Lock()
+	if warp.executor != nil {
+		warp.executor.Stop()
+	}
+	warp.rw.Unlock()
+	select {
+	case <- warp.executor.Stopped():
+	case <- ctx.Done():
+	}
+}
+
+func (warp *runner) StartExec(ctx context.Context, probFunc func(ctx context.Context), maxWaitTime time.Duration) {
 	warp.rw.Lock()
 	defer warp.rw.Unlock()
 
-	if warp.closed {
-		return
-	}
-
-	old := warp.pb
-	warp.pb = pb
+	old := warp.executor
+	warp.executor = prob.New(func(ctx context.Context) {
+		probFunc(ctx)
+	})
 	if old != nil && !old.IsStopped() {
 		old.Stop()
 		closeCtx , _ := context.WithTimeout(ctx, maxWaitTime)
@@ -417,56 +458,8 @@ func (warp *promiseWrap) ReplacePromise(ctx context.Context, pb *prob.Prob, maxW
 		}
 	}
 	if ctx.Err() == nil {
-		warp.pb.Start()
+		warp.executor.Start()
 	}
-}
-
-func (warp *promiseWrap) close(ctx context.Context) {
-	if warp.closed {
-		return
-	}
-	if warp.pb != nil {
-		warp.pb.Stop()
-		select {
-		case <- warp.pb.Stopped():
-		case <- ctx.Done():
-		}
-	}
-	warp.closed = true
-}
-
-func (store *promiseStore) setPromise(ctx context.Context, taskKey string, pb *prob.Prob, maxWaitDuration time.Duration) {
-	pw := promiseWrapPool.Get().(*promiseWrap)
-	v, loaded := store.m.LoadOrStore(taskKey, pw)
-
-	if loaded {
-		promiseWrapPool.Put(pw)
-	}
-
-	pw = v.(*promiseWrap)
-	pw.ReplacePromise(ctx, pb, maxWaitDuration)
-}
-
-func (store *promiseStore) delete(ctx context.Context, taskKey string) {
-	v, ok := store.m.Load(taskKey)
-	if !ok {
-		return
-	}
-
-	pw := v.(*promiseWrap)
-
-	pw.rw.Lock()
-	pw.close(ctx)
-	store.m.Delete(taskKey)
-	pw.rw.Unlock()
-}
-
-var promiseWrapPool = sync.Pool{
-	New: func() interface{} {
-		return &promiseWrap {
-
-		}
-	},
 }
 
 var hashPool = sync.Pool{
