@@ -37,7 +37,7 @@ func (td taskDoc) ToTask() task.Task {
 var _ task.Scheduler = (*TaskScheduler)(nil)
 
 type TaskScheduler struct {
-	leaders *leader.PartitionLeaders
+	leaders *leader.Leaders
 	col string
 	database *mongo.Database
 	resumeToken bson.Raw
@@ -57,7 +57,7 @@ func NewTaskScheduler(database *mongo.Database, col string, partitions map[leade
 		hashPartition: hashPartition,
 	}
 
-	scheduler.leaders = leader.NewPartitionLeaders(partitions, scheduler.runPartition)
+	scheduler.leaders = leader.NewLeaders(partitions, scheduler.runPartition)
 	return scheduler
 }
 
