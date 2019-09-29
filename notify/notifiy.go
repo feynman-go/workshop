@@ -8,13 +8,12 @@ import (
 	"github.com/feynman-go/workshop/window"
 	"github.com/pkg/errors"
 	"log"
-	"net/textproto"
 	"sync"
 	"time"
 )
 
 type Publisher interface {
-	Publish(ctx context.Context, message []Message) (lastToken string)
+	Publish(ctx context.Context, message []OutputMessage) (lastToken string)
 }
 
 type Notifier struct {
@@ -109,11 +108,18 @@ func (notifier *Notifier) Closed() chan <- struct{} {
 }
 
 type Message struct {
-	ID string
-	PayLoad interface{}
-	Head textproto.MIMEHeader
-	Token string
+	UID string
+	PayLoad []byte
+	Head map[string]string
+
 }
+
+type OutputMessage struct {
+	Token string
+	Topic string
+	Message
+}
+
 
 type Notify struct {
 	CursorID string
@@ -137,7 +143,7 @@ type MessageStream interface {
 
 type aggregator struct {
 	rw sync.RWMutex
-	msgs []Message
+	msgs []OutputMessage
 	publisher Publisher
 	wb WhiteBoard
 }
@@ -146,7 +152,7 @@ func (agg *aggregator) Aggregate(ctx context.Context, input interface{}, item wi
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
-	msg, ok := input.(Message)
+	msg, ok := input.(OutputMessage)
 	if !ok {
 		return errors.New("input must be message")
 	}

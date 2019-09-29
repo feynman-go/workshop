@@ -28,6 +28,17 @@ func NewLeaders(members map[PartitionID]*Member) *Leaders {
 	return leaders
 }
 
+func (pl *Leaders) AllPartitions() []PartitionID {
+	pl.rw.RLock()
+	defer pl.rw.RUnlock()
+
+	var ids []PartitionID
+	for id := range pl.mb {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	var rs []func(ctx context.Context)
 	pl.rw.RLock()
