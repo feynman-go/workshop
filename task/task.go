@@ -42,8 +42,8 @@ func (status StatusCode) String() string {
 //}
 
 type Schedule struct {
-	AwakenTime         time.Time
-	CompensateDuration time.Duration
+	AwakenTime         time.Time `bson:"awaken"`
+	CompensateDuration time.Duration `bson:"compensate"`
 }
 
 type Task struct {
@@ -225,3 +225,4 @@ func (er *Result) SetMaxRecover(maxRecover int32) *Result {
 type Summery struct {
 	StatusCount map[StatusCode]int64
 }
+

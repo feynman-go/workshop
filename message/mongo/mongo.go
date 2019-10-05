@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"github.com/feynman-go/workshop/message"
 	"github.com/feynman-go/workshop/notify"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"go.mongodb.org/mongo-driver/bson"
@@ -20,7 +21,7 @@ type Cursor struct {
 	parser Parser
 }
 
-func(c *Cursor) Next(ctx context.Context) *notify.Message {
+func(c *Cursor) Next(ctx context.Context) *message.Message {
 	if c.err != nil {
 		return nil
 	}
@@ -64,7 +65,7 @@ func (c *Cursor) ResumeToken() string {
 	return base64.RawStdEncoding.EncodeToString(raw)
 }
 
-type Parser func(raw bson.Raw) ([]notify.Message, error)
+type Parser func(raw bson.Raw) ([]message.Message, error)
 
 type MessageStream struct {
 	query bson.D
@@ -92,7 +93,7 @@ func (stream *MessageStream) Close() error {
 	return nil
 }
 
-func (stream *MessageStream) ResumeFromToken(ctx context.Context, resumeToken string) (notify.Cursor, error){
+func (stream *MessageStream) ResumeFromToken(ctx context.Context, resumeToken string) (message.Cursor, error){
 	runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
 	pipeline := mongo.Pipeline{bson.D{{"$match", stream.query}}}
 

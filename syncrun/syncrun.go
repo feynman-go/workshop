@@ -57,7 +57,6 @@ func RandRestart(min, max time.Duration) func() time.Duration {
 	}
 }
 
-
 //type Errors struct {
 //	hasErr bool
 //	errs map[int]error

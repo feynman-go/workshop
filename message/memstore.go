@@ -1,4 +1,4 @@
-package notify
+package message
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+var _ OutputCursor = (*MemoCursor)(nil)
+
 type MemoCursor struct {
 	rw sync.RWMutex
 	stream *MemoMessageStream
@@ -22,7 +24,7 @@ type MemoCursor struct {
 	startIndex uint64
 }
 
-func (cursor *MemoCursor) Next(ctx context.Context) *Message {
+func (cursor *MemoCursor) Next(ctx context.Context) *OutputMessage {
 	tk := time.NewTicker(time.Second)
 	defer tk.Stop()
 	for ctx.Err() == nil {
@@ -76,12 +78,7 @@ func (cursor *MemoCursor) Err() error {
 	return cursor.err
 }
 
-func (cursor *MemoCursor) ResumeToken() string {
-	if cursor.e == nil {
-		return ""
-	}
-	return cursor.stream.formatIndex(cursor.e.GetValue().(msgContainer).Index)
-}
+var _ OutputStream = (*MemoMessageStream)(nil)
 
 type MemoMessageStream struct {
 	rw sync.RWMutex
@@ -104,7 +101,7 @@ func NewMemoMessageStream() *MemoMessageStream {
 	return stream
 }
 
-func (stream *MemoMessageStream) Push(msg Message) uint64 {
+func (stream *MemoMessageStream) Push(topic string, msg Message) uint64 {
 	stream.rw.Lock()
 
 	var idx uint64
@@ -116,11 +113,15 @@ func (stream *MemoMessageStream) Push(msg Message) uint64 {
 		idx = 1
 	}
 
-	msg.Token = stream.formatIndex(idx)
+	output := &OutputMessage{
+		Message: msg,
+		Topic: topic,
+		OffsetToken: stream.formatIndex(idx),
+	}
 
 	stream.ll.Insert(msgContainer{
 		Index: idx,
-		Message: &msg,
+		Message: output,
 	})
 
 	stream.rw.Unlock()
@@ -137,6 +138,25 @@ func (stream *MemoMessageStream) Push(msg Message) uint64 {
 		}
 	}()
 	return idx
+}
+
+func (stream *MemoMessageStream) FetchOutputCursor(ctx context.Context) (OutputCursor, error) {
+	stream.rw.RLock()
+	index := stream.index
+	stream.rw.RUnlock()
+	cursor := &MemoCursor{
+		stream: stream,
+		err: nil,
+		closed: make(chan struct{}),
+		newItemCursor: make(chan struct{}, 2),
+		startIndex: index,
+	}
+
+	stream.rw.Lock()
+	defer stream.rw.Unlock()
+
+	stream.table[cursor] = true
+	return cursor, nil
 }
 
 func (stream *MemoMessageStream) Closed() <- chan struct{}{
@@ -167,36 +187,20 @@ func (stream *MemoMessageStream) parseToken(resumeToken string) (uint64, error) 
 	return index, nil
 }
 
-func (stream *MemoMessageStream) ResumeFromToken(ctx context.Context, resumeToken string) (Cursor, error) {
-	bs, err := base64.RawStdEncoding.DecodeString(resumeToken)
-	if err != nil {
-		return nil, err
-	}
-	index := binary.BigEndian.Uint64(bs[:])
-
-	cursor := &MemoCursor{
-		stream: stream,
-		err: nil,
-		closed: make(chan struct{}),
-		newItemCursor: make(chan struct{}, 2),
-		startIndex: index,
+func (stream *MemoMessageStream) CommitOutput(ctx context.Context, msgs []OutputMessage) error {
+	var maxIdx uint64 = 0
+	for _, m := range msgs {
+		idx, err := stream.parseToken(m.OffsetToken)
+		if err != nil {
+			return err
+		}
+		if idx != 0 && idx > maxIdx {
+			maxIdx = idx
+		}
 	}
 
 	stream.rw.Lock()
-	defer stream.rw.Unlock()
-
-	stream.table[cursor] = true
-
-	return cursor, nil
-}
-
-func (stream *MemoMessageStream) StoreResumeToken(ctx context.Context, token string) error {
-	idx, err := stream.parseToken(token)
-	if err != nil {
-		return err
-	}
-	stream.rw.Lock()
-	stream.index = idx
+	stream.index = maxIdx
 	stream.rw.Unlock()
 	return nil
 }
@@ -284,7 +288,7 @@ func (stream *MemoMessageStream) GetLastIndex() uint64 {
 
 type msgContainer struct {
 	Index uint64
-	Message *Message
+	Message *OutputMessage
 }
 
 func (m msgContainer) ExtractKey() float64 {

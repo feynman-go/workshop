@@ -7,22 +7,50 @@ import (
 	"time"
 )
 
-type PartitionExecutor func(ctx context.Context, partitionID PartitionID)
+type PartitionExecutor func(ctx context.Context, partition *Partition)
 
 type PartitionID int64
 
 type Leaders struct {
 	rw        sync.RWMutex
-	mb        map[PartitionID]*Member
+	mb        map[PartitionID]*Partition
 }
 
-func NewLeaders(members map[PartitionID]*Member) *Leaders {
+type Partition struct {
+	id PartitionID
+	member *Member
+	vars map[string]string
+}
+
+func NewPartition(id PartitionID, member *Member, vars map[string]string) *Partition {
+	vs := make(map[string]string, len(vars))
+	for k, v := range vars {
+		vs[k] = v
+	}
+	return &Partition{
+		id, member, vs,
+	}
+}
+
+func (part *Partition) ID() PartitionID {
+	return part.id
+}
+
+func (part *Partition) GetValue(key string) string {
+	if part.vars == nil {
+		return ""
+	}
+	return part.vars[key]
+}
+
+
+func NewLeaders(partitions ...*Partition) *Leaders {
 	leaders := &Leaders{
-		mb: map[PartitionID]*Member{},
+		mb: map[PartitionID]*Partition{},
 	}
 
-	for p, m := range members {
-		leaders.mb[p] = m
+	for _, m := range partitions {
+		leaders.mb[m.id] = m
 	}
 
 	return leaders
@@ -44,11 +72,11 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	pl.rw.RLock()
 	for key := range pl.mb {
 		k := key
-		m := pl.mb[k]
+		part := pl.mb[k]
 		rs = append(rs, syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
 			for ctx.Err() == nil {
-				m.SyncLeader(ctx, func(ctx context.Context) {
-					executor(ctx, k)
+				part.member.SyncLeader(ctx, func(ctx context.Context) {
+					executor(ctx, part)
 				})
 				return true
 			}

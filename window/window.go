@@ -130,7 +130,7 @@ func (w *Window) Close(ctx context.Context) error {
 	return nil
 }
 
-func (w *Window) Closed() chan <- struct{} {
+func (w *Window) Closed() <- chan struct{} {
 	return w.pb.Stopped()
 }
 

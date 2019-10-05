@@ -300,7 +300,7 @@ func (c *container) KeepLive(duration time.Duration, seq uint64) bool {
 		return false
 	}
 
-	if c.timer == nil {
+	if c.timer != nil {
 		c.timer.Stop()
 	}
 	seq = c.seq

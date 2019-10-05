@@ -1,4 +1,4 @@
-package notify
+package message
 
 import (
 	"context"
@@ -7,32 +7,34 @@ import (
 	"time"
 )
 
+var _ Publisher = (*MockPublisher)(nil)
+
 type MockPublisher struct {
-	PublishFunc func(ctx context.Context, message []Message) string
+	PublishFunc func(ctx context.Context, message []OutputMessage) error
 }
 
-func (publisher MockPublisher) Publish(ctx context.Context, message []Message) (lastToken string) {
+func (publisher MockPublisher) Publish(ctx context.Context, message []OutputMessage) error {
 	if publisher.PublishFunc != nil {
 		return publisher.PublishFunc(ctx, message)
 	}
-	return ""
+	return nil
 }
 
 func TestNotifySend(t *testing.T) {
 	var count int32
 	stream := NewMemoMessageStream()
-	notifier := New(stream, stream, MockPublisher{
-		PublishFunc: func(ctx context.Context, messages []Message) string {
+	notifier := New(stream, MockPublisher{
+		PublishFunc: func(ctx context.Context, messages []OutputMessage) error {
 			atomic.AddInt32(&count, 1)
-			return messages[0].Token
+			return nil
 		},
 	}, Option{})
 	defer notifier.Close()
 
 	time.Sleep(100 * time.Millisecond)
 
-	stream.Push(Message{
-		ID: "1",
+	stream.Push("topic", Message{
+		UID: "1",
 	})
 
 	time.Sleep(100 * time.Millisecond)
@@ -44,22 +46,22 @@ func TestNotifySend(t *testing.T) {
 func TestNotifySendMulti(t *testing.T) {
 	var count int32
 	stream := NewMemoMessageStream()
-	notifier := New(stream, stream, MockPublisher{
-		PublishFunc: func(ctx context.Context, messages []Message) string {
+	notifier := New(stream, MockPublisher{
+		PublishFunc: func(ctx context.Context, messages []OutputMessage) error {
 			atomic.AddInt32(&count, 1)
-			return messages[0].Token
+			return nil
 		},
 	}, Option{})
 	defer notifier.Close()
 
 	time.Sleep(100 * time.Millisecond)
 
-	stream.Push(Message{
-		ID: "1",
+	stream.Push("topic", Message{
+		UID: "1",
 	})
 
-	stream.Push(Message{
-		ID: "2",
+	stream.Push("topic", Message{
+		UID: "2",
 	})
 
 	time.Sleep(100 * time.Millisecond)
@@ -72,16 +74,16 @@ func TestNotifySendMulti(t *testing.T) {
 func TestNotifyOneByOne(t *testing.T) {
 	var count int32
 	stream := NewMemoMessageStream()
-	notifier := New(stream, stream, MockPublisher{
-		PublishFunc: func(ctx context.Context, messages []Message) string {
+	notifier := New(stream, MockPublisher{
+		PublishFunc: func(ctx context.Context, messages []OutputMessage) error {
 			atomic.AddInt32(&count, 1)
-			return messages[0].Token
+			return nil
 		},
 	}, Option{})
 	defer notifier.Close()
 
-	stream.Push(Message{
-		ID: "1",
+	stream.Push("topic", Message{
+		UID: "1",
 	})
 
 	time.Sleep(100 * time.Millisecond)
@@ -89,8 +91,8 @@ func TestNotifyOneByOne(t *testing.T) {
 		t.Fatal("fatal count message")
 	}
 
-	stream.Push(Message{
-		ID: "2",
+	stream.Push("topic", Message{
+		UID: "2",
 	})
 
 	time.Sleep(100 * time.Millisecond)
@@ -99,8 +101,8 @@ func TestNotifyOneByOne(t *testing.T) {
 		t.Fatal("fatal count message")
 	}
 
-	stream.Push(Message{
-		ID: "1",
+	stream.Push("topic", Message{
+		UID: "1",
 	})
 
 	time.Sleep(100 * time.Millisecond)
