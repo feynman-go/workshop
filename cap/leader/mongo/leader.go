@@ -2,8 +2,9 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"github.com/feynman-go/workshop/cap/leader"
-	"github.com/feynman-go/workshop/client/mgo"
+	"github.com/feynman-go/workshop/database/mgo"
 	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"go.mongodb.org/mongo-driver/bson"
@@ -21,10 +22,9 @@ type Elector struct {
 	col                 string
 	database            *mgo.DbClient
 	docTooLaterDuration time.Duration
-	cn                  chan document
-
-	resumeToken 		bson.Raw
-	pb *prob.Prob
+	cn                  chan electorDoc
+	resumeTimestamp     primitive.Timestamp
+	pb 					*prob.Prob
 }
 
 func NewElector(key interface{}, col string, database *mgo.DbClient, docTooLaterDuration time.Duration) *Elector {
@@ -33,7 +33,7 @@ func NewElector(key interface{}, col string, database *mgo.DbClient, docTooLater
 		col:                 col,
 		database:            database,
 		docTooLaterDuration: docTooLaterDuration,
-		cn:                  make(chan document, 32),
+		cn:                  make(chan electorDoc, 32),
 	}
 	elector.pb = prob.New(elector.run)
 	elector.pb.Start()
@@ -50,13 +50,16 @@ func (elector *Elector) PostElection(ctx context.Context, election leader.Electi
 			},
 		}, bson.M{
 			"$set": bson.M{
+				"_id": elector.key,
 				"lastTime": primitive.NewDateTimeFromTime(time.Now()),
 				"seq": election.Sequence,
 				"leader": election.ElectID,
 			},
 		}, (&options.UpdateOptions{}).SetUpsert(true))
-
 		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				return nil
+			}
 			return err
 		}
 		if res.UpsertedCount == 0 && res.ModifiedCount == 0 {
@@ -111,7 +114,7 @@ func (elector *Elector) fetchAndNotify(ctx context.Context, col *mongo.Collectio
 		log.Println("find current election err:", sr.Err())
 	}
 
-	var d document
+	var d electorDoc
 	err := sr.Decode(&d)
 	if err != nil {
 		return err
@@ -125,67 +128,85 @@ func (elector *Elector) fetchAndNotify(ctx context.Context, col *mongo.Collectio
 	return err
 }
 
-func (elector *Elector) setResumeToken(resumeToken bson.Raw) {
+func (elector *Elector) setResumeTimestamp(ts primitive.Timestamp) {
 	elector.rw.Lock()
 	defer elector.rw.Unlock()
-	elector.resumeToken = resumeToken
+	elector.resumeTimestamp = ts
 }
 
-func (elector *Elector) getResumeToken() bson.Raw{
+func (elector *Elector) getResumeTimestamp() primitive.Timestamp {
 	elector.rw.RLock()
 	defer elector.rw.RUnlock()
-	return elector.resumeToken
+	return elector.resumeTimestamp
 }
 
 func (elector *Elector) run(ctx context.Context) {
-	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
-		err := elector.database.Do(ctx, func(ctx context.Context, db *mongo.Database) error{
-			for ctx.Err() == nil {
-				runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
-				pipeline := mongo.Pipeline{bson.D{{"$match", bson.M{"_id": elector.key}}}}
 
+	pipeline := mongo.Pipeline{bson.D{
+		{"$match", bson.M{
+			"$or": bson.A{
+				bson.M{
+					//"fullDocument._id": elector.key,
+					"operationType": bson.M{"$in": bson.A{"insert", "replace", "delete", "update"}},
+				},
+				bson.M{
+					"operationType": bson.M{"$in": bson.A{"invalidate"}},
+				},
+			},
+		}},
+	}}
+
+	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+		err := elector.database.LongTimeDo(ctx, func(ctx context.Context, db *mongo.Database) error{
+			for ctx.Err() == nil {
+				ts := elector.getResumeTimestamp()
+				if ts.T == 0 {
+					ts.T = uint32(time.Now().Unix() - 10)
+				} else {
+					ts.I ++
+				}
+
+				runCtx, _ := context.WithTimeout(ctx, 10 * time.Second)
 				cs, err := db.Collection(elector.col).Watch(runCtx, pipeline,
 					options.ChangeStream().SetFullDocument(options.UpdateLookup),
-					options.ChangeStream().SetMaxAwaitTime(5 * time.Second),
-					options.ChangeStream().SetResumeAfter(elector.getResumeToken()),
+					options.ChangeStream().SetMaxAwaitTime(10 * time.Second),
+					options.ChangeStream().SetStartAtOperationTime(&ts),
 				)
 
 				if err != nil {
-					timer := time.NewTimer(2 * time.Second)
-					select {
-					case <- timer.C:
-					case <- ctx.Done():
-						return ctx.Err()
-					}
-					continue
+					return fmt.Errorf("watch err: %v", err)
 				}
 
-				var doc = document{}
-				for cs.Next(runCtx) {
+				var doc = changeDoc{}
+				for cs.Next(ctx) {
 					err = cs.Decode(&doc)
 					if err != nil {
-						cs.Close(ctx)
-						return err
-					}
-					lastTime := doc.FullDocument.LastTime
-					if lastTime.Add(elector.docTooLaterDuration).Before(time.Now()) {
-						continue
+						break
 					}
 
-					select {
-					case elector.cn <- doc:
-					default:
-						log.Println("elector push doc block")
+					elector.setResumeTimestamp(doc.ClusterTime)
+					if doc.OperationType == "invalidate" {
+						break
 					}
-					elector.setResumeToken(cs.ResumeToken())
+
+					if doc.FullDoc != nil {
+						lastTime := doc.FullDoc.LastTime
+						if lastTime.Add(elector.docTooLaterDuration).Before(time.Now()) {
+							continue
+						}
+						select {
+						case elector.cn <- *doc.FullDoc:
+						default:
+							log.Println("elector push doc block")
+						}
+					}
 				}
 
 				err = cs.Err()
+				cs.Close(runCtx)
 				if err == nil || err == mongo.ErrNilCursor || err == context.Canceled || err == context.DeadlineExceeded {
-					cs.Close(runCtx)
 					continue
 				} else {
-					cs.Close(runCtx)
 					return err
 				}
 			}
@@ -194,29 +215,43 @@ func (elector *Elector) run(ctx context.Context) {
 		if err != nil {
 			log.Println("elector run end with err:", err)
 		}
-		return false
-	}, syncrun.RandRestart(time.Second, 3 * time.Second))
+		return true
+	}, syncrun.RandRestart(time.Second, 3 * time.Second)) (ctx)
 }
 
 func (elector *Elector) WaitElectionNotify(ctx context.Context) (leader.Election, error) {
-	var election leader.Election
-	select {
-	case <- ctx.Done():
-		return leader.Election{}, ctx.Err()
-	case doc := <- elector.cn:
-		election = leader.Election{
-			Sequence: doc.FullDocument.Sequence,
-			ElectID:  doc.FullDocument.LeaderID,
+	for {
+		select {
+		case <- ctx.Done():
+			return leader.Election{}, ctx.Err()
+		case doc := <- elector.cn:
+			election := leader.Election{
+				Sequence: doc.Sequence,
+				ElectID:  doc.LeaderID,
+			}
+			return election, nil
 		}
 	}
-	return election, nil
 }
 
-type document struct {
-	FullDocument struct {
-		ID interface{} `bson:"_id"`
-		LeaderID string `bson:"leader"`
-		Sequence int64 `bson:"seq"`
-		LastTime time.Time `bson:"lastTime,omitempty"`
-	} `bson:"fullDocument"`
+type electorDoc struct {
+	ID interface{} `bson:"_id"`
+	LeaderID string `bson:"leader"`
+	Sequence int64 `bson:"seq"`
+	LastTime time.Time `bson:"lastTime,omitempty"`
+}
+
+type changeDoc struct {
+	ID bson.Raw          `bson:"_id"`
+	OperationType string `bson:"operationType"`
+	FullDoc *electorDoc  `bson:"fullDocument"`
+	Ns struct {
+		DB string `bson:"ns"`
+		Coll string `bson:"coll"`
+	} `bson:"ns"`
+	To struct {
+		DB string `bson:"ns"`
+		Coll string `bson:"coll"`
+	} `bson:"to"`
+	ClusterTime primitive.Timestamp `bson:"clusterTime"`
 }

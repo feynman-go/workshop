@@ -24,6 +24,10 @@ func (opt Option) SetParallelCount(count int) Option {
 	return opt
 }
 
+func (opt Option) AddMiddle(middle ...DoMiddle) Option {
+	opt.Middles = append(opt.Middles, middle...)
+	return opt
+}
 
 type Client struct {
 	name          string
@@ -231,7 +235,7 @@ type Recoverable interface {
 	TryRecovery(ctx context.Context) error
 }
 
-func BasicBreakerMiddle(limiter *rate.Limiter, r Recoverable, resetMinInterval, resetMaxInterval time.Duration) DoMiddle {
+func NewBasicBreakerMiddle(limiter *rate.Limiter, r Recoverable, resetMinInterval, resetMaxInterval time.Duration) DoMiddle {
 	cn := breaker.NewWatcherChain(
 		breaker.NewRateWatcher(limiter),
 		&agentRecovery{r, resetMaxInterval, resetMinInterval},
@@ -253,25 +257,28 @@ func (lm *breakerMiddle) WrapDo(f func(ctx context.Context, agent Agent) error, 
 	}
 }
 
-func RecorderMiddle(domain string, factory record.Factory) DoMiddle {
+func NewRecorderMiddle(factory record.Factory) DoMiddle {
 	return &recorderMiddle{
-		domain: domain,
 		factory: factory,
 	}
 }
 
 type recorderMiddle struct {
-	domain string
 	factory record.Factory
 }
 
 func (md *recorderMiddle) WrapDo(f func(ctx context.Context, agent Agent) error, opt ActionOption) func(ctx context.Context, agent Agent) error {
 	return func(ctx context.Context, agent Agent) (err error) {
-		recorder := md.factory.ActionRecorder(ctx, md.domain + ":" + opt.Name)
+		recorder, ctx := md.factory.ActionRecorder(ctx, opt.Name)
 		defer func() {
-			recorder.Commit(err, nil)
+			recorder.Commit(err)
 		}()
 		err = f(ctx, agent)
 		return err
 	}
+}
+
+type RecoverableAgent interface {
+	Recoverable
+	Agent
 }

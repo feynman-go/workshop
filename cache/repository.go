@@ -32,29 +32,27 @@ type Resource struct {
 type Repository struct {
 	st             SourceDataStore
 	ch             CacheStore
-	monitor        RepositoryMonitor
 	handles        *sync.Map // 句柄
 	logger         *zap.Logger
 	errHandler     ErrHandler
 	throughLimiter *rate.Limiter
 }
 
-func NewRepository(handler ResourceHandler, logger *zap.Logger) *Repository {
+func NewRepository(handler ResourceHandler, logger *zap.Logger, middle ...Middle) *Repository {
+	mids := chainMiddle(middle)
 	return &Repository{
-		st:             handler,
-		ch:             handler,
+		st:             mids.WrapStore(handler),
+		ch:             mids.WrapCache(handler),
 		handles:        new(sync.Map),
-		monitor:        handler.Monitor,
 		logger:         logger,
-		throughLimiter: rate.NewLimiter(handler.ThroughLimit, 1),
-		errHandler:     handler,
+		throughLimiter: handler.ThroughLimit,
+		errHandler:     mids.WrapErrHandler(handler),
 	}
 }
 
 // find resource in cache first, if not exists than read from store and update to cache
 func (rep *Repository) Find(ctx context.Context, request Request) (*Resource, error) {
 	var (
-		t         = time.Now()
 		err       error
 		res       *Resource
 	)
@@ -64,7 +62,6 @@ func (rep *Repository) Find(ctx context.Context, request Request) (*Resource, er
 		hd := v.(*mutex.Mutex)
 		if !hd.Wait(ctx) {
 			err = fmt.Errorf("wait context err")
-			rep.recordFind(request, false, false, err, t)
 			return nil, err
 		}
 	}
@@ -72,37 +69,20 @@ func (rep *Repository) Find(ctx context.Context, request Request) (*Resource, er
 	res, err = rep.findFromCache(ctx, request)
 	if err != nil { // reset resource to nil if is err from cache
 		if rep.errHandler == nil || !rep.errHandler.ThroughOnCacheErr(ctx, request, err) {
-			rep.recordFind(request, false, false, err, t)
 			return nil, err
 		}
 		res = nil
 	}
 
-	var (
-		hit = false
-		downgrade = false
-	)
-
 	if res == nil {
 		res, err = rep.throughToStore(ctx, request)
 		if err != nil {
-			downgrade = true
 			res, err = rep.downgrade(ctx, request, err) // try downgrade data
 		} else if res == nil {
-			downgrade = true
 			res, err = rep.downgrade(ctx, request, nil) // try downgrade data if data not exists
 		}
-	} else {
-		hit = true
 	}
-	rep.recordFind(request, hit, downgrade, err, t)
 	return res, err
-}
-
-func (rep *Repository) recordFind(key Request, hit bool, downgrade bool, err error, start time.Time) {
-	if rep.monitor != nil {
-		rep.monitor.AddFindRecord(key, hit, downgrade, err, time.Now().Sub(start))
-	}
 }
 
 func (rep *Repository) throughToStore(ctx context.Context, id Request) (*Resource, error) {
@@ -245,11 +225,6 @@ func (rep *Repository) tryThrough(ctx context.Context) bool {
 	return true
 }
 
-// monitor interface
-type RepositoryMonitor interface {
-	AddFindRecord(key Request, hit bool, downgrade bool, err error, total time.Duration)
-}
-
 
 type Handler interface {
 	CacheStore
@@ -286,14 +261,13 @@ type ErrHandler interface {
 var handlerPool = &sync.Pool{New: func() interface{} { return &mutex.Mutex{} }}
 
 type ResourceHandler struct {
-	Monitor 				RepositoryMonitor
-	ThroughLimit 			rate.Limit
+	ThroughLimit 			*rate.Limiter
 	FetchFromStoreFunc      func(ctx context.Context, request Request) (*Resource, error)
 	UpdateCacheFunc         func(ctx context.Context, request Request, data Resource) (*Resource, error)
 	FindFromCacheFunc       func(ctx context.Context, request Request) (*Resource, error)
 	DisableCacheFunc        func(ctx context.Context, request Request) error
 	ThroughOnCacheErrFunc   func(ctx context.Context, resource Request, err error) (goThrough bool)   // go through on cache err, store limiter will also work
-	DowngradeOnErr          func(ctx context.Context, resource Request, err error) (*Resource, error) //data downgrading
+	Downgrade               func(ctx context.Context, resource Request, err error) (*Resource, error) //data downgrading
 	BeforeResourceCacheFunc func(key Request)
 }
 
@@ -343,8 +317,8 @@ func (h ResourceHandler) ThroughOnCacheErr(ctx context.Context, key Request, err
 
 //data downgrading if find data has err
 func (h ResourceHandler) Downgrading(ctx context.Context, key Request, err error) (*Resource, error) {
-	if h.DowngradeOnErr != nil {
-		res, err := h.DowngradeOnErr(ctx, key, err)
+	if h.Downgrade != nil {
+		res, err := h.Downgrade(ctx, key, err)
 		return res, err
 	}
 	return nil, err

@@ -2,7 +2,9 @@ package prob
 
 import (
 	"context"
+	"github.com/pkg/errors"
 	"sync"
+	"time"
 )
 
 type Prob struct {
@@ -123,6 +125,27 @@ func (prob *Prob) Start() bool {
 	prob.started = true
 	return true
 }
+
+func (prob *Prob) StopAndWait(ctx context.Context) error {
+	prob.Stop()
+	select {
+	case <- ctx.Done():
+		return ctx.Err()
+	case <- prob.Stopped():
+		return nil
+	}
+}
+
+func (prob *Prob) StopAndWaitDuration(duration time.Duration) error {
+	prob.Stop()
+	select {
+	case <- time.After(duration):
+		return errors.New("stop timeout")
+	case <- prob.Stopped():
+		return nil
+	}
+}
+
 
 func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) bool {
 	select {

@@ -116,12 +116,13 @@ func (ca *CountAggregator) Aggregate(ctx context.Context, input interface{}, ite
 func (ca *CountAggregator) OnTrigger(ctx context.Context) error {
 	ca.rw.Lock()
 	defer ca.rw.Unlock()
+	defer func() {
+		ca.count = 0
+	}()
 
 	if ca.inner != nil {
 		return ca.inner.OnTrigger(ctx)
 	}
 
-
-	ca.count = 0
 	return nil
 }

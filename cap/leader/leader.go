@@ -43,7 +43,7 @@ func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Me
 
 	mb.tasks = task.NewManager(
 		task.NewMemoScheduler(5 * time.Second),
-		task.FuncExecutor(mb.process),
+		task.ExecutorFunc(mb.process),
 		task.DefaultManagerOption(),
 	)
 	return mb
@@ -76,7 +76,7 @@ func (mb *Member) DoAsLeader(ctx context.Context, do func(ctx context.Context)) 
 	go func() {
 		select {
 		case <- runCtx.Done():
-		case <-onFollower:
+		case <- onFollower:
 			cancel()
 		}
 	}()
@@ -148,15 +148,18 @@ func (mb *Member) startKeepLive(ctx context.Context) error {
 }
 
 func (mb *Member) process(ctx task.Context, result *task.Result)  {
+	mb.rw.Lock()
+	defer mb.rw.Unlock()
+
 	var delta time.Duration
-	info := mb.GetInfo()
+	info := mb.info
 	if info.IsLeader {
-		mb.startKeepLive(ctx)
 		delta = mb.getKeepLiveDuration()
+		go mb.startKeepLive(ctx)
 		log.Println("did start keep live next:", time.Now().Add(delta))
 	} else {
-		mb.startElect(ctx)
 		delta = mb.getElectionDuration()
+		go mb.startElect(ctx)
 		log.Println("did start elect next:", time.Now().Add(delta))
 	}
 
@@ -189,8 +192,6 @@ func (mb *Member) getExecDuration() time.Duration {
 	return mb.option.MinExecDuration + time.Duration(delta)
 }
 
-
-
 func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 	mb.rw.Lock()
 	defer mb.rw.Unlock()
@@ -222,20 +223,6 @@ func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 	}
 	mb.info.Sequence = election.Sequence
 	mb.info.LeaderID = election.ElectID
-
-	var expectTime = time.Now().Add(mb.getElectionDuration())
-	if mb.info.IsLeader {
-		expectTime = time.Now().Add(mb.getKeepLiveDuration())
-	}
-
-	err := mb.tasks.ApplyNewTask(ctx, "process",
-		task.Option{}.
-		SetExpectStartTime(expectTime).
-			SetMaxRestartCount(0),
-	)
-	if err != nil {
-		log.Println("apply new task err", err)
-	}
 }
 
 func (mb *Member) Start() bool {
@@ -252,7 +239,7 @@ func (mb *Member) Start() bool {
 				task.Option{}.
 					SetExpectStartTime(expectTime).
 					SetMaxExecDuration(mb.getExecDuration()).
-					SetMaxRestartCount(0),
+					SetMaxRecoverCount(0),
 			)
 
 			if err != nil {
@@ -322,6 +309,17 @@ type ElectionFactory interface {
 
 type ElectionFactoryFunc func (ctx context.Context, sequence int64) (Election, error)
 
-func (fun ElectionFactoryFunc) NewElection(ctx context.Context, sequence int64) (Election, error){
+func (fun ElectionFactoryFunc) NewElection(ctx context.Context, sequence int64) (Election, error) {
 	return fun(ctx, sequence)
+}
+
+type ConstElectionFactory struct {
+	ConstID string
+}
+
+func (factory *ConstElectionFactory) NewElection(ctx context.Context, sequence int64) (Election, error) {
+	return Election {
+		Sequence: sequence + 1,
+		ElectID: factory.ConstID,
+	}, nil
 }

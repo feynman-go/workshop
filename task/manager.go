@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"github.com/feynman-go/workshop/promise"
 	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
@@ -17,20 +18,19 @@ type Executor interface {
 	Execute(ctx Context, res *Result)
 }
 
-type FuncExecutor func(cb Context, res *Result)
+type ExecutorFunc func(cb Context, res *Result)
 
-func (fe FuncExecutor) Execute(cb Context, res *Result)  {
+func (fe ExecutorFunc) Execute(cb Context, res *Result)  {
 	fe(cb, res)
 }
 
 type Awaken struct {
-	Task       Task
-	OverLapped *Task
+	TaskKey   string
 }
 
 type Scheduler interface {
-	ScheduleTask(ctx context.Context, task Task, overlap bool) (Task, error)
-	CloseTaskSchedule(ctx context.Context, task Task) error
+	ScheduleTask(ctx context.Context, task Task, cover bool) error
+	RemoveTaskSchedule(ctx context.Context, task Task) error
 	WaitTaskAwaken(ctx context.Context) (awaken Awaken, err error)
 	ReadTask(ctx context.Context, taskKey string) (*Task, error)
 	NewStageID(ctx context.Context, taskKey string) (stageID int64, err error)
@@ -63,6 +63,12 @@ type Manager struct {
 
 func NewManager(scheduler Scheduler, executor Executor, opt ManagerOption) *Manager {
 	opt = opt.CompleteWith(DefaultManagerOption())
+
+	for _, mid := range opt.Middle {
+		scheduler = mid.WrapScheduler(scheduler)
+		executor = mid.WrapExecutor(executor)
+	}
+
 	p := promise.NewPool(opt.MaxBusterTask)
 	ret := &Manager{
 		executor:           executor,
@@ -107,7 +113,7 @@ func (svc *Manager) ApplyNewTask(ctx context.Context, taskKey string, option ...
 	task := Task {
 		Key:   taskKey,
 		Stage: stageID,
-		Info: Info{
+		Meta: Meta{
 			Tags:       tags,
 			ExecOption: execOption,
 			CreateTime: time.Now(),
@@ -115,7 +121,12 @@ func (svc *Manager) ApplyNewTask(ctx context.Context, taskKey string, option ...
 		Schedule: execOption.GetExpectStartSchedule(),
 	}
 
-	_, err = svc.scheduler.ScheduleTask(ctx, task, overlap)
+	if overlap {
+		task.Schedule.AwakenTime = time.Now()
+		task.Meta.Exclusive = true
+	}
+
+	err = svc.scheduler.ScheduleTask(ctx, task, overlap)
 	if err != nil {
 		return err
 	}
@@ -137,7 +148,7 @@ func (svc *Manager) CloseTask(ctx context.Context, taskKey string) error {
 		CompensateDuration: svc.option.WaitCloseDuration * 2,
 	}
 	t.Execution.End(Result{}, now)
-	_, err = svc.scheduler.ScheduleTask(ctx, *t, true)
+	err = svc.scheduler.ScheduleTask(ctx, *t, true)
 	return err
 }
 
@@ -147,8 +158,8 @@ func (svc *Manager) TaskCallback(ctx context.Context, task Task, result Result) 
 		return err
 	}
 
-	if t.Stage != task.Stage || t.Status() != statusExecuting { // check version
-		return nil
+	if t.Stage != task.Stage || t.Status() != StatusExecuting { // check version
+		return fmt.Errorf("task '%v' callback with bad stage '%v':'%v' status: '%v'", task.Key, t.Stage, task.Stage, t.Status())
 	}
 
 	exec := &t.Execution
@@ -160,8 +171,8 @@ func (svc *Manager) TaskCallback(ctx context.Context, task Task, result Result) 
 		CompensateDuration: svc.option.WaitCloseDuration * 2,
 	}
 
-	t.Info.StartCount = 0
-	_, err = svc.scheduler.ScheduleTask(ctx, *t, false)
+	t.Meta.StartCount = 0
+	err = svc.scheduler.ScheduleTask(ctx, *t, true)
 	return err
 }
 
@@ -171,7 +182,7 @@ func (svc *Manager) KeepLive(ctx context.Context, task Task) error {
 		return err
 	}
 
-	if t.Stage != task.Stage || t.Status() != statusExecuting { // check version
+	if t.Stage != task.Stage || t.Status() != StatusExecuting { // check version
 		return nil
 	}
 
@@ -179,45 +190,31 @@ func (svc *Manager) KeepLive(ctx context.Context, task Task) error {
 	exec.LastKeepLive = time.Now()
 
 	t.Schedule = exec.Config.GetExecutingSchedule()
-	_, err = svc.scheduler.ScheduleTask(ctx, *t, false)
+	err = svc.scheduler.ScheduleTask(ctx, *t, true)
 	return err
 }
 
 
 func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) (ok bool, err error) {
 	// reconfig by manager option
-	if task.Info.ExecOption.MaxRecover != nil && *task.Info.ExecOption.MaxRecover > 0 {
-		maxRestart := *task.Info.ExecOption.MaxRecover
-		if maxRestart < task.Info.StartCount {
+	if task.Meta.ExecOption.MaxRecover != nil && *task.Meta.ExecOption.MaxRecover > 0 {
+		maxRestart := *task.Meta.ExecOption.MaxRecover
+		if maxRestart < task.Meta.StartCount {
 			return false, nil
 		}
 	}
 
-	task.Schedule = task.Info.ExecOption.GetExpectStartSchedule()
+	task.Schedule = task.Meta.ExecOption.GetExpectStartSchedule()
 	stageID, err := svc.scheduler.NewStageID(ctx, task.Key)
 	if err != nil {
 		return false, err
 	}
 
-	task.NewExec(stageID, task.Info.ExecOption)
-	_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
+	task.NewExec(stageID, task.Meta.ExecOption)
+	err = svc.scheduler.ScheduleTask(ctx, *task, true)
 	return true, err
 }
 
-//func (svc *Manager) getRandomRedundancy() time.Duration {
-//	return time.Duration(rand.Int63n(int64(svc.option.WaitCloseDuration)))
-//}
-
-func (svc *Manager) processOverlappedTask(ctx context.Context, task *Task) error {
-	if task == nil {
-		return nil
-	}
-	if !task.Execution.Available {
-		return nil
-	}
-	svc.ws.delete(ctx, task.Key)
-	return nil
-}
 
 func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	var (
@@ -247,10 +244,14 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 	case exec.ReadyToStart():
 		svc.doExec(ctx, task)
 	case exec.WaitingStart():
-		_, err = svc.scheduler.ScheduleTask(ctx, *task, false)
+		task.Schedule.AwakenTime = exec.StartTime
+		if task.Schedule.AwakenTime.IsZero() {
+			task.Schedule.AwakenTime = time.Now()
+		}
+		err = svc.scheduler.ScheduleTask(ctx, *task, true)
 	case exec.Executing():
 		if exec.OverExecTime(t) || exec.IsDead(t) {
-			if task.Info.CanRestart() {
+			if task.Meta.CanRestart() {
 				ok, err = svc.newTaskExecution(ctx, task)
 				if err == nil && !ok {
 					svc.closeTask(ctx, task)
@@ -261,7 +262,7 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 		}
 	case exec.Ended():
 		if exec.Result.Continue {
-			task.Info.ExecOption = task.Info.ExecOption.Merge(exec.Result.NextExec)
+			task.Meta.ExecOption = task.Meta.ExecOption.Merge(exec.Result.NextExec)
 			ok, err = svc.newTaskExecution(ctx, task)
 			if err == nil && !ok {
 				svc.closeTask(ctx, task)
@@ -280,11 +281,11 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 
 func (svc *Manager) doExec(ctx context.Context, task *Task) {
 	task.Execution.Start(time.Now())
-
 	task.Schedule = task.Execution.Config.GetExecutingSchedule()
-	task.Info.StartCount++
-	task.Info.ExecCount++
-	t, err := svc.scheduler.ScheduleTask(ctx, *task, false)
+	task.Meta.StartCount++
+	task.Meta.ExecCount++
+
+	err := svc.scheduler.ScheduleTask(ctx, *task, true)
 	if err != nil {
 		return
 	}
@@ -292,14 +293,15 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 	worker := svc.ws.fetchWorker(task.Key)
 	worker.StartExec(ctx, func(ctx context.Context) {
 		var res = &Result{}
-		res.Finish()
+		res.Finish() // default is finish
 
 		svc.executor.Execute(Context{
 			Context:   ctx,
 			manager:   svc,
-			task:   t,
+			task:   *task,
 		}, res)
-		err = svc.TaskCallback(ctx, t, *res)
+
+		err = svc.TaskCallback(ctx, *task, *res)
 		if err != nil {
 			log.Println("task call back err:", err)
 		}
@@ -308,34 +310,40 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 }
 
 func (svc *Manager) closeTask(ctx context.Context, t *Task) {
-	if svc.scheduler.CloseTaskSchedule(ctx, *t) == nil {
-		//TODO close memory
+	if err := svc.scheduler.RemoveTaskSchedule(ctx, *t); err == nil {
 		runCtx, _ := context.WithTimeout(ctx, svc.option.WaitCloseDuration)
 		svc.ws.delete(runCtx, t.Key)
+	} else {
+		log.Println("close task schedule err:", err)
 	}
 }
 
 func (svc *Manager) doProcess(ctx context.Context, awaken Awaken) error {
-
 	h := hashPool.Get().(hash.Hash32)
 	defer hashPool.Put(h)
 	h.Reset()
-	_, err := h.Write([]byte(awaken.Task.Key))
+	_, err := h.Write([]byte(awaken.TaskKey))
 	if err != nil {
 		return err
 	}
 
 	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
-		var err error
-		if awaken.OverLapped != nil {
-			err = svc.processOverlappedTask(ctx, awaken.OverLapped)
-			if err != nil {
-				return promise.Result{
-					Err: err,
-				}
+		task, err := svc.scheduler.ReadTask(ctx, awaken.TaskKey)
+		if err != nil {
+			return promise.Result{
+				Err: err,
 			}
 		}
-		err = svc.processTask(ctx, &awaken.Task)
+		if task == nil {
+			return promise.Result{
+				Err: err,
+			}
+		}
+		if task.Meta.Exclusive {
+			svc.ws.delete(ctx, task.Key)
+			task.Meta.Exclusive = false
+		}
+		err = svc.processTask(ctx, task)
 		return promise.Result{
 			Err: err,
 		}
@@ -368,7 +376,7 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 }*/
 
 func (svc *Manager) Close(ctx context.Context) error {
-	syncrun.Run(ctx, func(ctx context.Context) {
+	syncrun.RunAsGroup(ctx, func(ctx context.Context) {
 		svc.pb.Stop()
 		select {
 		case <- ctx.Done():

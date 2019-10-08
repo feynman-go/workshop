@@ -7,7 +7,7 @@ import (
 
 func DefaultManagerOption () ManagerOption{
 	return ManagerOption {
-		MaxBusterTask:           runtime.NumGoroutine() * 8,
+		MaxBusterTask:           runtime.GOMAXPROCS(0) + 1,
 		DefaultExecMaxDuration:  time.Minute,
 		DefaultRecoverCount:     3,
 		WaitCloseDuration:       10 * time.Second,
@@ -20,6 +20,7 @@ type ManagerOption struct {
 	DefaultRecoverCount     int32
 	DefaultKeepLiveDuration time.Duration
 	WaitCloseDuration       time.Duration
+	Middle 					[]Middle
 }
 
 func (mOpt ManagerOption) Option() Option {
@@ -31,7 +32,7 @@ func (mOpt ManagerOption) Option() Option {
 		opt = opt.SetMaxExecDuration(mOpt.DefaultExecMaxDuration)
 	}
 	if mOpt.DefaultRecoverCount != 0 {
-		opt = opt.SetMaxRestartCount(mOpt.DefaultRecoverCount)
+		opt = opt.SetMaxRecoverCount(mOpt.DefaultRecoverCount)
 	}
 
 	return opt
@@ -82,7 +83,7 @@ func (opt Option) SetMaxExecDuration(maxExec time.Duration) Option {
 	return opt
 }
 
-func (opt Option) SetMaxRestartCount(count int32) Option {
+func (opt Option) SetMaxRecoverCount(count int32) Option {
 	opt.Exec = opt.Exec.SetMaxRecoverCount(count)
 	return opt
 }

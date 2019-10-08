@@ -141,14 +141,23 @@ func TestWindowInvokeCount(t *testing.T) {
 			return nil
 		},
 	}, CounterWrapper(3))
+
 	err := wd.Accept(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	if triggered != 0 {
+		t.Fatal("bad triggered count", triggered)
+	}
+
 	err = wd.Accept(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if triggered != 0 {
+		t.Fatal("bad triggered count", triggered)
 	}
 
 	err = wd.Accept(context.Background(), nil)
@@ -159,6 +168,35 @@ func TestWindowInvokeCount(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	if triggered != 1 {
+		t.Fatal("bad triggered count", triggered)
+	}
+
+	err = wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if triggered != 1 {
+		t.Fatal("bad triggered count", triggered)
+	}
+
+	err = wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if triggered != 1 {
+		t.Fatal("bad triggered count", triggered)
+	}
+
+	err = wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if triggered != 2 {
 		t.Fatal("bad triggered count", triggered)
 	}
 }

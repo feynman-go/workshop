@@ -25,12 +25,12 @@ type Notifier struct {
 }
 
 type Option struct {
-	MaxCount       int64
-	MaxDuration    time.Duration
-	FailedWait     time.Duration
-	StreamMiddles  []OutputStreamMiddle
-	PublishMiddles []PublisherMiddle
-	CloseTimeOut   time.Duration
+	MaxBlockCount    int64
+	MaxBlockDuration time.Duration
+	FailedWait       time.Duration
+	StreamMiddles    []OutputStreamMiddle
+	PublishMiddles   []PublisherMiddle
+	CloseTimeOut     time.Duration
 }
 
 func New(stream OutputStream, publisher Publisher, option Option) *Notifier {
@@ -45,13 +45,13 @@ func New(stream OutputStream, publisher Publisher, option Option) *Notifier {
 	ret.pb = prob.New(ret.run)
 
 	var wrappers []window.Wrapper
-	if option.MaxCount <= 0 {
-		option.MaxCount = 1
+	if option.MaxBlockCount <= 0 {
+		option.MaxBlockCount = 1
 	}
 
-	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxCount)))
-	if option.MaxDuration > 0 {
-		wrappers = append(wrappers, window.DurationWrapper(option.MaxDuration))
+	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxBlockCount)))
+	if option.MaxBlockDuration > 0 {
+		wrappers = append(wrappers, window.DurationWrapper(option.MaxBlockDuration))
 	}
 
 	ret.wrappers = wrappers
@@ -74,6 +74,7 @@ func (notifier *Notifier) newPublishWindow(cursor OutputCursor) *publishWindow {
 		stream:    notifier.stream,
 		cursor: 	cursor,
 	}
+
 	ret.wd = window.New(ret, notifier.wrappers...)
 	return ret
 }
@@ -169,7 +170,6 @@ func (agg *publishWindow) close(ctx context.Context) error {
 	default:
 		return agg.wd.Close(ctx)
 	}
-
 }
 
 // imply interface for window
@@ -179,8 +179,10 @@ func (agg *publishWindow) Aggregate(ctx context.Context, input interface{}, item
 
 	msg, ok := input.(OutputMessage)
 	if !ok {
+		log.Println("input is not message")
 		return errors.New("input must be message")
 	}
+
 	agg.msgs = append(agg.msgs, msg)
 	return nil
 }
@@ -193,6 +195,7 @@ func (agg *publishWindow) OnTrigger(ctx context.Context) error {
 	if len(agg.msgs) != 0 {
 		err := agg.publisher.Publish(ctx, agg.msgs)
 		if err != nil {
+			log.Println("publisher push message err:", err)
 			return err
 		}
 		err = agg.stream.CommitOutput(ctx, agg.msgs)

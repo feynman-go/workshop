@@ -6,16 +6,16 @@ import (
 )
 
 type Mutex struct {
-	rwm      sync.RWMutex
-	writerCn chan struct{}
-	readerCn chan struct{}
-	readerCount uint32
+	rwm              sync.RWMutex
+	writerReleaedCn  chan struct{}
+	readerReleaderCn chan struct{}
+	readerCount      uint32
 }
 
 func (mx *Mutex) Wait(ctx context.Context) bool {
 	var cn chan struct{}
 	mx.rwm.RLock()
-	cn = mx.writerCn
+	cn = mx.writerReleaedCn
 	mx.rwm.RUnlock()
 	if cn != nil {
 		select {
@@ -62,12 +62,12 @@ func (mx *Mutex) TryHoldForRead() bool {
 }
 
 func (mx *Mutex) wait(ctx context.Context) bool {
-	mx.rwm.RLock()
-	writerCn := mx.writerCn
-	readerCn := mx.readerCn
-	mx.rwm.RUnlock()
-
 	for {
+		mx.rwm.RLock()
+		writerCn := mx.writerReleaedCn
+		readerCn := mx.readerReleaderCn
+		mx.rwm.RUnlock()
+
 		switch  {
 		case writerCn != nil && readerCn != nil:
 			select {
@@ -82,6 +82,12 @@ func (mx *Mutex) wait(ctx context.Context) bool {
 			case <- ctx.Done():
 				return false
 			}
+		case readerCn != nil:
+			select {
+			case <- readerCn:
+			case <- ctx.Done():
+				return false
+			}
 		default:
 			return ctx.Err() == nil
 		}
@@ -89,11 +95,12 @@ func (mx *Mutex) wait(ctx context.Context) bool {
 }
 
 func (mx *Mutex) waitForRead(ctx context.Context) bool {
-	mx.rwm.RLock()
-	writerCn := mx.writerCn
-	mx.rwm.RUnlock()
-
 	for {
+
+		mx.rwm.RLock()
+		writerCn := mx.writerReleaedCn
+		mx.rwm.RUnlock()
+
 		switch  {
 		case writerCn != nil :
 			select {
@@ -112,8 +119,8 @@ func (mx *Mutex) occupy() bool {
 	mx.rwm.Lock()
 	defer mx.rwm.Unlock()
 
-	if mx.writerCn == nil && mx.readerCn == nil {
-		mx.writerCn = make(chan struct{})
+	if mx.writerReleaedCn == nil && mx.readerReleaderCn == nil {
+		mx.writerReleaedCn = make(chan struct{})
 		return true
 	}
 	return false
@@ -123,12 +130,12 @@ func (mx *Mutex) occupyRead() bool {
 	mx.rwm.Lock()
 	defer mx.rwm.Unlock()
 
-	if mx.writerCn != nil {
+	if mx.writerReleaedCn != nil {
 		return false
 	}
 
-	if mx.readerCn == nil {
-		mx.readerCn = make(chan struct{})
+	if mx.readerReleaderCn == nil {
+		mx.readerReleaderCn = make(chan struct{})
 	}
 	mx.readerCount ++
 	return true
@@ -138,11 +145,11 @@ func (mx *Mutex) occupyRead() bool {
 func (mx *Mutex) Release() {
 	mx.rwm.Lock()
 	defer mx.rwm.Unlock()
-	if mx.writerCn == nil {
+	if mx.writerReleaedCn == nil {
 		return
 	}
-	close(mx.writerCn)
-	mx.writerCn = nil
+	close(mx.writerReleaedCn)
+	mx.writerReleaedCn = nil
 }
 
 func (mx *Mutex) ReleaseForRead() {
@@ -151,7 +158,7 @@ func (mx *Mutex) ReleaseForRead() {
 	mx.readerCount --
 
 	if mx.readerCount == 0 {
-		close(mx.readerCn)
-		mx.readerCn = nil
+		close(mx.readerReleaderCn)
+		mx.readerReleaderCn = nil
 	}
 }

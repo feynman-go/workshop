@@ -3,42 +3,116 @@ package record
 import (
 	"context"
 	"github.com/pkg/errors"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
 
-type Recorder interface {
-	Commit(err error, labels Labels)
-}
-
-type Labels map[string]string
-
 type Factory interface {
-	ActionRecorder(ctx context.Context, name string) Recorder
+	ActionRecorder(ctx context.Context, name string, fields ...Field) (Recorder, context.Context)
 }
 
-type WrapFactory struct {
+type Recorder interface {
+	Commit(err error, fields ...Field)
+}
+
+type FieldType uint8
+
+const (
+	FieldTypeUnknown = 0
+	FieldTypeNumber = 1
+	FieldTypeString = 2
+	FieldTypeBool = 3
+)
+
+func StringField(name, value string) Field {
+	return Field{
+		Name: name,
+		Type: FieldTypeString,
+		String: value,
+	}
+}
+
+func NumberField(name string, number float64) Field {
+	return Field{
+		Name: name,
+		Type: FieldTypeNumber,
+		Number: number,
+	}
+}
+
+func BoolField(name string, value bool) Field {
+	var number float64 = 0
+	if value {
+		number = 1
+	}
+	return Field{
+		Name: name,
+		Type: FieldTypeBool,
+		Number: number,
+	}
+}
+
+type Field struct {
+	Name 	string
+	Type    FieldType
+	Number  float64
+	String  string
+}
+
+func (f Field) Value() interface{} {
+	switch f.Type{
+	case FieldTypeNumber:
+		return f.Number
+	case FieldTypeString:
+		return f.String
+	case FieldTypeBool:
+		return f.Bool()
+	default:
+		return nil
+	}
+}
+
+func (f Field) Bool() bool {
+	return f.Number > 0
+}
+
+func (f Field) StringValue() string {
+	switch f.Type {
+	case FieldTypeNumber:
+		return strconv.FormatFloat(f.Number, 'f', 3, 64)
+	case FieldTypeString:
+		return f.String
+	case FieldTypeBool:
+		return strconv.FormatBool(f.Number > 0)
+	default:
+		return ""
+	}
+}
+
+
+type FactoryWrapper struct {
 	Wrapper
 	Factory Factory
 }
 
-func (mr WrapFactory) ActionRecorder(ctx context.Context, name string) Recorder {
-	ar := mr.ActionRecorder(ctx, name)
+func (mr FactoryWrapper) ActionRecorder(ctx context.Context, name string, fields ...Field) (Recorder, context.Context) {
+	ar, ctx := mr.ActionRecorder(ctx, name)
 	if mr.Wrapper != nil {
-		ar = mr.Wrapper.WrapRecord(ctx, name, ar)
+		ar, ctx = mr.Wrapper.WrapRecord(ctx, name, ar)
 	}
-	return ar
+	return ar, ctx
 }
 
 type Wrapper interface {
-	WrapRecord(ctx context.Context, name string, record Recorder) Recorder
+	WrapRecord(ctx context.Context, name string, record Recorder) (Recorder, context.Context)
 }
 
-type MaxDurationWrap struct {
+type MaxDurationWrapper struct {
 	MaxDuration time.Duration
 }
 
-func (wrap MaxDurationWrap) WrapRecord(ctx context.Context, name string, record Recorder) Recorder {
+func (wrap MaxDurationWrapper) WrapRecord(ctx context.Context, name string, record Recorder) (Recorder, context.Context) {
 	cn := make(chan struct{})
 	rd := &maxDurationRecorder {
 		cn: cn,
@@ -54,12 +128,12 @@ func (wrap MaxDurationWrap) WrapRecord(ctx context.Context, name string, record 
 		case <- cn:
 		case <- ctx.Done():
 			if atomic.CompareAndSwapInt32(committed, 0, 1) {
-				record.Commit(errors.New("over max time"), nil)
+				record.Commit(errors.New("over max time"))
 				close(cn)
 			}
 		}
 	}(ctx, &rd.commitFlag, cn)
-	return rd
+	return rd, ctx
 }
 
 type maxDurationRecorder struct {
@@ -68,9 +142,9 @@ type maxDurationRecorder struct {
 	cn  	   chan struct{}
 }
 
-func (recorder *maxDurationRecorder) Commit(err error, labels Labels) {
+func (recorder *maxDurationRecorder) Commit(err error, fields ...Field) {
 	if atomic.CompareAndSwapInt32(&recorder.commitFlag, 0, 1) {
-		recorder.inner.Commit(err, labels)
+		recorder.inner.Commit(err, fields...)
 		close(recorder.cn)
 	}
 }
@@ -81,18 +155,21 @@ func ChainFactory(factorys ...Factory) Factory {
 
 type chainFactory []Factory
 
-func (cf chainFactory) ActionRecorder(ctx context.Context, name string) Recorder {
+func (cf chainFactory) ActionRecorder(ctx context.Context, name string, fields ...Field) (Recorder, context.Context) {
+	var retCtx = ctx
 	records := make([]Recorder, 0, len(cf))
+	var rd Recorder
 	for _, f := range cf {
-		records = append(records, f.ActionRecorder(ctx, name))
+		rd, retCtx = f.ActionRecorder(retCtx, name, fields...)
+		records = append(records, rd)
 	}
-	return chainRecorder(records)
+	return chainRecorder(records), ctx
 }
 
 type chainRecorder []Recorder
 
-func (cr chainRecorder) Commit(err error, labels Labels) {
+func (cr chainRecorder) Commit(err error, fields ...Field) {
 	for _, rd := range cr {
-		rd.Commit(err, labels)
+		rd.Commit(err, fields...)
 	}
 }

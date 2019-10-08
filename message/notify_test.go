@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"log"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestNotifySendMulti(t *testing.T) {
 	stream := NewMemoMessageStream()
 	notifier := New(stream, MockPublisher{
 		PublishFunc: func(ctx context.Context, messages []OutputMessage) error {
-			atomic.AddInt32(&count, 1)
+			log.Println("add count", atomic.AddInt32(&count, 1), time.Now())
 			return nil
 		},
 	}, Option{})
@@ -64,9 +65,8 @@ func TestNotifySendMulti(t *testing.T) {
 		UID: "2",
 	})
 
-	time.Sleep(100 * time.Millisecond)
-	time.Sleep(time.Second)
-	if count != 2 {
+	time.Sleep(1 * time.Second)
+	if atomic.LoadInt32(&count) != 2 {
 		t.Fatal("fatal count message")
 	}
 }

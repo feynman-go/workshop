@@ -10,7 +10,7 @@ func TestParallelSelfClose(t *testing.T) {
 	var closed1 = make(chan struct{})
 	var closed2 = make(chan struct{})
 	var closed3 = make(chan struct{})
-	Run(context.Background(), func(ctx context.Context) {
+	RunAsGroup(context.Background(), func(ctx context.Context) {
 		time.Sleep(time.Second)
 		close(closed1)
 		return
@@ -51,7 +51,7 @@ func TestParallelContextClose(t *testing.T) {
 	var closed2 = make(chan struct{})
 	var closed3 = make(chan struct{})
 	go func() {
-		Run(ctx, func(ctx context.Context) {
+		RunAsGroup(ctx, func(ctx context.Context) {
 			select {
 			case <- ctx.Done():
 				close(closed1)
@@ -99,7 +99,7 @@ func TestParallelWaitClose(t *testing.T) {
 	var closed2 = make(chan struct{})
 	var closed3 = make(chan struct{})
 	go func() {
-		Run(ctx, func(ctx context.Context) {
+		RunAsGroup(ctx, func(ctx context.Context) {
 			select {
 			case <- ctx.Done():
 				time.Sleep(time.Second)

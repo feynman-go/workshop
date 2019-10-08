@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func Run(ctx context.Context, runner ...func(ctx context.Context)) {
+func RunAsGroup(ctx context.Context, runner ...func(ctx context.Context)) {
 	var cancel func()
 	ctx, cancel = context.WithCancel(ctx)
 

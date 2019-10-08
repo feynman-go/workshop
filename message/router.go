@@ -96,7 +96,7 @@ func (router *Router) run(ctx context.Context) {
 		fs = append(fs, joint.run)
 	}
 
-	syncrun.Run(ctx, fs...)
+	syncrun.RunAsGroup(ctx, fs...)
 }
 
 type subscribeJoint struct {

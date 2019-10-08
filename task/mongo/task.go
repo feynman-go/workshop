@@ -2,7 +2,8 @@ package mongo
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/client/mgo"
+	"github.com/feynman-go/workshop/database/mgo"
+	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/feynman-go/workshop/task"
 	"github.com/pkg/errors"
@@ -20,13 +21,13 @@ const (
 )
 
 type taskDoc struct {
-	Key string        `bson:"_id"`
-	Stage  int64         `bson:"stage"`
-	Schedule task.Schedule `bson:"schedule"`
-	Info task.Info `bson:"info"`
+	Key string               `bson:"_id"`
+	Stage  int64             `bson:"stage"`
+	Schedule task.Schedule   `bson:"schedule"`
+	Meta task.Meta           `bson:"meta"`
 	Execution task.Execution `bson:"execution"`
-	SortKey sortKey `bson:"sortKey"`
-	Status task.StatusCode `bson:"status"`
+	SortKey sortKey          `bson:"sortKey"`
+	Status task.StatusCode   `bson:"status"`
 }
 
 func (td taskDoc) ToTask() task.Task {
@@ -34,7 +35,7 @@ func (td taskDoc) ToTask() task.Task {
 		td.Key,
 		td.Stage,
 		td.Schedule,
-		td.Info,
+		td.Meta,
 		td.Execution,
 	}
 }
@@ -42,102 +43,39 @@ func (td taskDoc) ToTask() task.Task {
 var _ task.Scheduler = (*TaskScheduler)(nil)
 
 type TaskScheduler struct {
-	partID int16
-	col string
-	db *mgo.DbClient
-	resumeToken bson.Raw
-	rw sync.RWMutex
-	timers map[string]*timerInfo
-	ch chan taskDoc
-	pb *prob.Prob
+	partID        int16
+	col           string
+	db            *mgo.DbClient
+	resumeToken   bson.Raw
+	rw            sync.RWMutex
+	timers        map[string]*timerInfo
+	ch            chan taskDoc
+	pb            *prob.Prob
 	hashPartition func(taskKey string) int16
-	lastTimePoint time.Time
+	lastWatchTime primitive.Timestamp
+	inited        bool
 }
 
 func NewTaskScheduler(database *mgo.DbClient, col string, partID int16, hashPartition func(taskKey string) int16) *TaskScheduler {
 	scheduler := &TaskScheduler{
 		col: col,
 		timers: map[string]*timerInfo{},
-		ch: make(chan taskDoc),
+		ch: make(chan taskDoc, 1),
 		db: database,
 		hashPartition: hashPartition,
 		partID: partID,
 	}
 	scheduler.pb = prob.New(scheduler.run)
+	scheduler.pb.Start()
 	return scheduler
 }
 
-func (ts *TaskScheduler) ScheduleTask(ctx context.Context, tk task.Task, overlap bool) (task.Task, error) {
-	status := tk.Status()
-	var sr *mongo.SingleResult
-
-	err := ts.db.Do(ctx, func(ctx context.Context, db *mongo.Database) error {
-		sr = db.Collection(ts.col).FindOneAndUpdate(
-			ctx,
-			bson.M{
-				"_id": tk.Key,
-				"$or": bson.A{
-					bson.M {
-						"stage": bson.M {
-							"$lte": tk.Stage,
-						},
-					},
-					bson.M {
-						"stage": tk.Stage,
-						"status": bson.M {
-							"$lte": tk.Status(),
-						},
-					},
-				},
-			},
-			bson.M{
-				"$setOnInsert": bson.M{
-					"_id": tk.Key,
-					"create_time": time.Now(),
-				},
-				"$set": bson.M {
-					"status": status,
-					"stage": tk.Stage,
-					"schedule": tk.Schedule,
-					"info": tk.Info,
-					"execution": tk.Execution,
-					"sortKey": sortKey(0).
-						setPartition(ts.hashPartition(tk.Key)).
-						setUnixMillionSeconds(
-							int64(tk.Schedule.AwakenTime.UnixNano() / int64(time.Millisecond,
-							))),
-				},
-			},
-			options.FindOneAndUpdate().
-				SetUpsert(true).
-				SetReturnDocument(options.After),
-		)
-
-		if sr.Err() != nil {
-			return sr.Err()
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return task.Task{}, err
-	}
-
-	if sr == nil {
-		return task.Task{}, errors.New("bad result")
-	}
-
-	var td taskDoc
-	err = sr.Decode(&td)
-	if err != nil {
-		return task.Task{}, err
-	}
-
-	return td.ToTask(), nil
+func (ts *TaskScheduler) ScheduleTask(ctx context.Context, tk task.Task, cover bool) error {
+	_, err := ts.update(ctx, tk, cover)
+	return err
 }
 
-func (ts *TaskScheduler) CloseTaskSchedule(ctx context.Context, tk task.Task) error {
+func (ts *TaskScheduler) RemoveTaskSchedule(ctx context.Context, tk task.Task) error {
 	ts.rw.Lock()
 	ti := ts.timers[tk.Key]
 	if ti != nil {
@@ -178,13 +116,9 @@ func(ts *TaskScheduler) WaitTaskAwaken(ctx context.Context) (awaken task.Awaken,
 		return task.Awaken{}, err
 	case td := <- ts.ch:
 		return task.Awaken {
-			Task: td.ToTask(),
+			TaskKey: td.ToTask().Key,
 		}, nil
 	}
-}
-
-func (ts *TaskScheduler) start() {
-	ts.pb.Start()
 }
 
 func (ts *TaskScheduler) Close(ctx context.Context) error {
@@ -195,6 +129,10 @@ func (ts *TaskScheduler) Close(ctx context.Context) error {
 	case <- ts.pb.Stopped():
 		return nil
 	}
+}
+
+func (ts *TaskScheduler) start() {
+	ts.pb.Start()
 }
 
 func (ts *TaskScheduler) ReadTask(ctx context.Context, taskKey string) (*task.Task, error) {
@@ -261,19 +199,18 @@ func(ts *TaskScheduler) setUpTasks(ctx context.Context, startKey, endKey sortKey
 	for cursor.Next(ctx) {
 		err = cursor.Decode(&doc)
 		if err != nil {
-			return err
+			break
 		}
 		ts.updateTask(doc)
 		if doc.Schedule.AwakenTime.After(lastTime) {
 			lastTime = doc.Schedule.AwakenTime
 		}
 	}
-	ts.rw.Lock()
-	defer ts.rw.Unlock()
 
-	if lastTime.After(ts.lastTimePoint) {
-		ts.lastTimePoint = lastTime
+	if err != nil {
+		return err
 	}
+
 	return cursor.Err()
 }
 
@@ -282,61 +219,83 @@ func(ts *TaskScheduler) run(ctx context.Context) {
 	startKey := sortKey(0).setPartition(pid)
 	endKey := sortKey(0).setPartition(pid + 1)
 
-	ts.runWatcher(ctx, startKey, endKey)
+	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+		err := ts.runWatcher(ctx, startKey, endKey)
+		if err != nil {
+			log.Println("run watcher err:", err)
+		}
+		return true
+	}, syncrun.RandRestart(2 * time.Second, 5 *time.Second))(ctx)
 	return
 }
 
-func(ts *TaskScheduler) runWatcher(ctx context.Context, startKey, endKey sortKey) error {
-	pipeline := bson.A{bson.M{
-		"$match": bson.M{
-			"sortKey": bson.M{
-				"$gte": startKey,
-				"lt": endKey,
+func(ts *TaskScheduler) prepareWatchOption(interval time.Duration) (*options.ChangeStreamOptions, time.Time) {
+	now := time.Now()
+	if interval == 0 {
+		interval = 5 * time.Second
+	}
+
+	opt := options.ChangeStream().
+		SetFullDocument(options.UpdateLookup).
+		SetMaxAwaitTime(interval)
+
+	ts.rw.RLock()
+	resumeToken := ts.resumeToken
+	lastWatchTime := ts.lastWatchTime
+	ts.rw.RUnlock()
+
+	if resumeToken == nil {
+		if lastWatchTime.T == 0 {
+			lastWatchTime.T = uint32(now.Unix() - 10)
+		} else {
+			lastWatchTime.I ++
+		}
+		opt = opt.SetStartAtOperationTime(&lastWatchTime)
+	} else {
+		opt = opt.SetResumeAfter(ts.resumeToken)
+	}
+
+
+	return opt, now.Add(interval * 2)
+}
+
+func (ts *TaskScheduler) runWatcher(ctx context.Context, startKey, endKey sortKey) error {
+	pipeline := mongo.Pipeline{bson.D{
+		{"$match", bson.M{
+			"$or": bson.A{
+				bson.M{
+					"fullDocument.sortKey": bson.M{"$lt": endKey, "$gte": startKey},
+					"operationType": bson.M{"$in": bson.A{"insert", "replace", "delete", "update"}},
+				},
+				bson.M{
+					"operationType": bson.M{"$in": bson.A{"invalidate"}},
+				},
 			},
-		},
+		}},
 	}}
 
 	err := ts.db.LongTimeDo(ctx, func(ctx context.Context, db *mongo.Database) error {
 		for ctx.Err() == nil {
-			opt := options.ChangeStream().
-				SetFullDocument(options.UpdateLookup).
-				SetMaxAwaitTime(5 * time.Second)
+			opt, lastTime := ts.prepareWatchOption(5 * time.Second)
 
-			ts.rw.RLock()
-			if ts.resumeToken == nil {
-				opt = opt.SetStartAtOperationTime(&primitive.Timestamp{
-					T: uint32(time.Now().Unix() + 30),
-				})
-			} else {
-				opt = opt.SetResumeAfter(ts.getResumeToken())
-			}
-			if ts.lastTimePoint.IsZero() {
-				ts.lastTimePoint = time.Now()
-			}
-			ts.rw.RUnlock()
-
-			lastTime := ts.lastTimePoint.Add(10 * time.Second)
 			err := ts.setUpTasks(ctx, startKey, endKey, lastTime, db)
 			if err != nil {
+				log.Println("setup task err:", err)
 				return err
 			}
 
-			runCtx, _ := context.WithTimeout(ctx, lastTime.Sub(time.Now()))
-
+			runCtx, _ := context.WithDeadline(ctx, lastTime)
 			cs, err := db.Collection(ts.col).Watch(runCtx, pipeline, opt)
 			if err != nil {
 				return err
 			}
 
-			var doc = struct {
-				ID bson.Raw `bson:"_id"`
-				OperationType string `bson:"operationType"`
-				FullDoc taskDoc `bson:"fullDocument"`
-			}{}
-
-			for cs.Next(runCtx) {
+			var doc = changeDoc{}
+			var invalidate = false
+			for !invalidate && cs.Next(runCtx)  {
 				err = cs.Decode(&doc)
 				if err != nil {
+					log.Println("decode change stream doc err:", err)
 					break
 				}
 
@@ -348,9 +307,17 @@ func(ts *TaskScheduler) runWatcher(ctx context.Context, startKey, endKey sortKey
 					}
 				case "delete":
 					ts.removeTask(doc.FullDoc)
+				case "invalidate":
+					invalidate = true
 				}
+				ts.setLastWatchTime(doc.ClusterTime)
 				ts.setResumeToken(doc.ID)
 			}
+
+			if invalidate {
+				ts.setResumeToken(nil)
+			}
+
 			if err == nil {
 				err = cs.Err()
 			}
@@ -365,6 +332,98 @@ func(ts *TaskScheduler) runWatcher(ctx context.Context, startKey, endKey sortKey
 	return err
 }
 
+type changeDoc struct {
+	ID bson.Raw `bson:"_id"`
+	OperationType string `bson:"operationType"`
+	FullDoc taskDoc `bson:"fullDocument"`
+	Ns struct {
+		DB string `bson:"ns"`
+		Coll string `bson:"coll"`
+	} `bson:"ns"`
+	To struct {
+		DB string `bson:"ns"`
+		Coll string `bson:"coll"`
+	} `bson:"to"`
+	ClusterTime primitive.Timestamp `bson:"clusterTime"`
+}
+
+func (ts *TaskScheduler) update(ctx context.Context, tk task.Task, cover bool) (last *taskDoc, err error) {
+	status := tk.Status()
+
+	query := bson.M{
+		"_id": tk.Key,
+		"$or": bson.A{
+			bson.M {
+				"stage": bson.M {
+					"$lte": tk.Stage,
+				},
+			},
+			bson.M {
+				"stage": tk.Stage,
+				"status": bson.M {
+					"$lte": tk.Status(),
+				},
+			},
+		},
+	}
+
+	update := bson.M{
+		"$setOnInsert": bson.M{
+			"_id": tk.Key,
+			"create_time": time.Now(),
+		},
+		"$set": bson.M {
+			"status": status,
+			"stage": tk.Stage,
+			"schedule": tk.Schedule,
+			"meta": tk.Meta,
+			"execution": tk.Execution,
+			"sortKey": sortKey(0).
+				setPartition(ts.hashPartition(tk.Key)).
+				setUnixMillionSeconds(
+					int64(tk.Schedule.AwakenTime.UnixNano() / int64(time.Millisecond,
+					))),
+		},
+	}
+
+	opt := options.FindOneAndUpdate().
+		SetUpsert(true).SetReturnDocument(options.Before)
+
+	if !cover {
+		opt.SetUpsert(false)
+	}
+
+	var sr *mongo.SingleResult
+	err = ts.db.Do(ctx, func(ctx context.Context, db *mongo.Database) error {
+		sr = db.Collection(ts.col).FindOneAndUpdate(
+			ctx,
+			query,
+			update,
+			opt,
+		)
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if sr == nil {
+		return nil, errors.New("bad result")
+	}
+
+	if sr.Err() == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+
+	var td taskDoc
+	err = sr.Decode(&td)
+	if err != nil {
+		return nil, err
+	}
+	return &td, nil
+}
+
 
 func (ts *TaskScheduler) setResumeToken(resumeToken bson.Raw) {
 	ts.rw.Lock()
@@ -372,11 +431,12 @@ func (ts *TaskScheduler) setResumeToken(resumeToken bson.Raw) {
 	ts.resumeToken = resumeToken
 }
 
-func (ts *TaskScheduler) getResumeToken() bson.Raw{
-	ts.rw.RLock()
-	defer ts.rw.RUnlock()
-	return ts.resumeToken
+func (ts *TaskScheduler) setLastWatchTime(tsp primitive.Timestamp) {
+	ts.rw.Lock()
+	defer ts.rw.Unlock()
+	ts.lastWatchTime = tsp
 }
+
 
 func (ts *TaskScheduler) updateTask(data taskDoc) {
 	ts.rw.Lock()
@@ -402,11 +462,35 @@ func (ts *TaskScheduler) removeTask(data taskDoc) {
 	}
 }
 
+func (ts *TaskScheduler) init(ctx context.Context) error {
+	if ts.inited {
+		return nil
+	}
+	err := ts.db.Do(ctx, func(ctx context.Context, db *mongo.Database) error {
+		_, err := db.Collection(ts.col).Indexes().CreateOne(ctx, mongo.IndexModel{
+			Keys: bson.M{
+				"sortKey": -1,
+			},
+		})
+		return err
+	})
+
+	if err != nil {
+		log.Println("init db index err:", err)
+		return err
+	}
+	ts.inited = true
+	return nil
+}
+
 
 type sortKey uint64
 
 func (sk sortKey) setPartition(partition int16) sortKey {
-	return sk | sortKey(partition << 48)
+	flag := sortKey(0xffff)
+	flag = flag << 48
+	flag = ^flag
+	return flag & sk | (sortKey(partition) << 48)
 }
 
 func (sk sortKey) getPartition() int16 {
@@ -414,7 +498,10 @@ func (sk sortKey) getPartition() int16 {
 }
 
 func (sk sortKey) setUnixMillionSeconds(millionSeconds int64) sortKey {
-	return sk | sortKey(millionSeconds << 4)
+	flag := sortKey(0xffffffff)
+	flag = flag << 4
+	flag = ^flag
+	return flag & sk | (sortKey(millionSeconds) << 4)
 }
 
 func (sk sortKey) getUnixMillionSeconds() uint64 {
@@ -437,11 +524,12 @@ func (info *timerInfo) setTaskAwaken(data taskDoc, cn chan taskDoc) {
 		info.timer.Stop()
 	}
 	info.expectTime = data.Schedule.AwakenTime
-	info.timer = time.AfterFunc(data.Schedule.AwakenTime.Sub(time.Now()), func() {
+	delta := data.Schedule.AwakenTime.Sub(time.Now())
+	info.timer = time.AfterFunc(delta, func() {
 		cn <- data
 		d := data
 		d.Schedule.AwakenTime = time.Now().Add(d.Schedule.CompensateDuration)
-		info.setTaskAwaken(data, cn)
+		info.setTaskAwaken(d, cn)
 	})
 }
 

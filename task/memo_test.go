@@ -18,22 +18,20 @@ func TestManagerBasic(t *testing.T) {
 
 	g := &sync.WaitGroup{}
 	g.Add(1)
-	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result)  {
+	manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result)  {
 		g.Done()
 		res.Finish()
 	}), ManagerOption{})
 
 	err := manager.ApplyNewTask(context.Background(), "1",
 		(&Option{}).
-			SetMaxRestartCount(3),
+			SetMaxRecoverCount(3),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-
 	g.Wait()
-
 	time.Sleep(2 * time.Second)
 	task, err := sch.ReadTask(context.Background(), "1")
 	if err != nil {
@@ -55,7 +53,7 @@ func TestManagerExpectTime(t *testing.T) {
 	sch := NewMemoScheduler(1 * time.Second)
 
 	var flag int32
-	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result)  {
+	manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result)  {
 		atomic.StoreInt32(&flag, 1)
 		defer atomic.StoreInt32(&flag, 2)
 		time.Sleep(1 * time.Second)
@@ -63,7 +61,7 @@ func TestManagerExpectTime(t *testing.T) {
 
 	err := manager.ApplyNewTask(context.Background(), "1",
 		(&Option{}).
-			SetMaxRestartCount(3).SetExpectStartTime(time.Now().Add(time.Second)),
+			SetMaxRecoverCount(3).SetExpectStartTime(time.Now().Add(time.Second)),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -100,60 +98,64 @@ func TestManagerExpectTime(t *testing.T) {
 }
 
 func TestTaskRetry(t *testing.T) {
-	sch := NewMemoScheduler(1 * time.Second)
+	for i := 0; i < 10 ; i ++{
+		sch := NewMemoScheduler(1 * time.Second)
 
-	var count int32
-	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result) {
-		n := atomic.AddInt32(&count, 1)
-		if cb.Task().Info.ExecCount != n {
-			t.Fatal("bad exec count")
+		var count int32
+		manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result) {
+			n := atomic.AddInt32(&count, 1)
+			if cb.Task().Meta.ExecCount != n {
+				t.Fatal("bad exec count")
+			}
+
+			res.WaitAndReDo(100 * time.Millisecond)
+			res.SetMaxDuration(100 * time.Millisecond)
+			res.SetMaxRecover(1)
+
+			if n >= 3 {
+				res.Finish()
+			}
+
+		}), ManagerOption{})
+
+		err := manager.ApplyNewTask(context.Background(), "1",
+			(&Option{}).
+				SetMaxRecoverCount(10),
+		)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		res.WaitAndReDo(time.Second)
-		res.SetMaxDuration(time.Second)
-		res.SetMaxRecover(1)
+		time.Sleep(400 * time.Millisecond)
 
-		if n >= 3 {
-			res.Finish()
+		if ct := atomic.LoadInt32(&count); ct != 3 {
+			log.Println("retry count expect 3， but", ct)
+			t.Fatal("retry count expect 3， but", ct)
 		}
 
-	}), ManagerOption{})
-
-	err := manager.ApplyNewTask(context.Background(), "1",
-		(&Option{}).
-			SetMaxRestartCount(10),
-	)
-	if err != nil {
-		t.Fatal(err)
+		task, err := sch.ReadTask(context.Background(), "1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task != nil {
+			t.Fatal("status not closed")
+		}
 	}
 
-	time.Sleep(4 * time.Second)
 
-	if ct := atomic.LoadInt32(&count); ct != 3 {
-		log.Println("retry count expect 3， but", ct)
-		t.Fatal("retry count expect 3， but", ct)
-	}
-
-	task, err := sch.ReadTask(context.Background(), "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if task != nil {
-		t.Fatal("status not closed")
-	}
 }
 
 func TestRepeatTask(t *testing.T) {
 	sch := NewMemoScheduler(1 * time.Second)
 	var start int32
-	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result) {
+	manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result) {
 		atomic.AddInt32(&start, 1)
 	}), ManagerOption{})
 
 	for i := 0 ; i < 3 ; i++{
 		err := manager.ApplyNewTask(context.Background(), "1",
 			(&Option{}).
-				SetMaxRestartCount(10),
+				SetMaxRecoverCount(10),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -182,7 +184,7 @@ func TestOverLap(t *testing.T) {
 	var start int32
 	var end int32
 
-	manager := NewManager(sch, FuncExecutor(func(cb Context, res *Result) {
+	manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result) {
 		atomic.AddInt32(&start, 1)
 		timer := time.NewTimer(1 * time.Second)
 		select {
@@ -192,7 +194,7 @@ func TestOverLap(t *testing.T) {
 		}
 	}), ManagerOption{})
 
-	err := manager.ApplyNewTask(context.Background(), "1", (&Option{}).SetMaxRestartCount(10))
+	err := manager.ApplyNewTask(context.Background(), "1", (&Option{}).SetMaxRecoverCount(10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,7 @@ func TestOverLap(t *testing.T) {
 
 	err = manager.ApplyNewTask(context.Background(), "1",
 		(&Option{}).
-			SetMaxRestartCount(10).
+			SetMaxRecoverCount(10).
 		SetOverLap(true),
 	)
 	if err != nil {

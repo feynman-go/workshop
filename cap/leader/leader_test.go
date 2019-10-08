@@ -8,19 +8,20 @@ import (
 )
 
 func TestSingleLeader(t *testing.T) {
-	elector := NewMemoElector()
+	electors := NewMemoDecider()
+	elector := electors.CreateElector()
 	member := NewMember(elector, ElectionFactoryFunc(func (ctx context.Context, sequence int64) (Election, error) {
 		return Election{
 			Sequence: sequence + 1,
 			ElectID: "electID",
 		}, nil
 	}), Option{
-		MaxElectDuration: 1 * time.Second,
+		MaxElectDuration: time.Second,
 		MinElectDuration: time.Second / 2,
-		MaxKeepLiveDuration: 1 * time.Second,
+		MaxKeepLiveDuration: time.Second,
 		MinKeepLiveDuration: time.Second / 2,
-		MaxExecDuration: 3 * time.Second,
-		MinExecDuration: 1 * time.Second,
+		MaxExecDuration: time.Second,
+		MinExecDuration: time.Second,
 	})
 
 	member.Start()
@@ -40,7 +41,9 @@ func TestSingleLeader(t *testing.T) {
 }
 
 func TestLeaderToFollower(t *testing.T) {
-	elector := NewMemoElector()
+	electors := NewMemoDecider()
+	elector := electors.CreateElector()
+
 	member1 := NewMember(elector, ElectionFactoryFunc(func (ctx context.Context, sequence int64) (Election, error) {
 		return Election{
 			Sequence: sequence + 1,

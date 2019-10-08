@@ -84,5 +84,5 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 		}, syncrun.RandRestart(time.Second, 3 * time.Second)))
 	}
 	pl.rw.RUnlock()
-	syncrun.Run(ctx, rs...)
+	syncrun.RunAsGroup(ctx, rs...)
 }

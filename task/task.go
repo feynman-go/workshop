@@ -10,31 +10,31 @@ var ErrOverMaxRetry = errors.New("over max retry")
 var ErrExecuting = errors.New("is executing")
 
 const (
-	statusUnknown     StatusCode = 0
-	statusUnavailable     StatusCode = 1
-	statusWaitingExec     StatusCode = 2
-	statusExecuting       StatusCode = 3
-	statusExecuteFinished StatusCode = 4
+	StatusUnknown         StatusCode = 0
+	StatusUnavailable     StatusCode = 1
+	StatusWaitingExec     StatusCode = 2
+	StatusExecuting       StatusCode = 3
+	StatusExecuteFinished StatusCode = 4
 )
 
 type StatusCode int
 
 func (status StatusCode) String() string {
 	switch status {
-	case statusUnavailable:
+	case StatusUnavailable:
 		return "unavailable"
-	case statusWaitingExec:
+	case StatusWaitingExec:
 		return "waiting exec"
-	case statusExecuting:
+	case StatusExecuting:
 		return "executing"
-	case statusExecuteFinished:
+	case StatusExecuteFinished:
 		return "exec finished"
 	default:
 		return "unknown"
 	}
 }
 
-//type Desc struct {
+//type Meta struct {
 //	TaskKey  string
 //	ExecDesc ExecOption
 //	Tags     []string
@@ -49,9 +49,10 @@ type Schedule struct {
 type Task struct {
 	Key       string    `bson:"_id"`
 	Stage     int64     `bson:"stage"`
-	Schedule  Schedule  `bson:"schedule"`
-	Info      Info      `bson:"info"`
-	Execution Execution `bson:"execution"`
+	Schedule  Schedule  `bson:"schedule"` // schedule info for scheduler to schedule
+	Meta      Meta      `bson:"meta"`      // task meta info
+	Execution Execution `bson:"execution"` // current execution info
+
 }
 
 func (t *Task) NewExec(stageID int64, option ExecOption) {
@@ -67,15 +68,15 @@ func (t *Task) Status() StatusCode {
 	er := t.Execution
 	switch  {
 	case er.WaitingStart():
-		return statusWaitingExec
+		return StatusWaitingExec
 	case er.Executing():
-		return statusExecuting
+		return StatusExecuting
 	case er.Ended():
-		return statusExecuteFinished
+		return StatusExecuteFinished
 	case er.Available:
-		return statusUnavailable
+		return StatusUnavailable
 	default:
-		return statusUnknown
+		return StatusUnknown
 	}
 }
 
@@ -88,15 +89,16 @@ func (t *Task) Status() StatusCode {
 	return ret
 }*/
 
-type Info struct {
+type Meta struct {
 	Tags       []string   `bson:"tags"`
 	ExecOption ExecOption `bson:"execDesc"`
 	CreateTime time.Time  `bson:"createTime"`
 	StartCount int32      `bson:"restartCount"`
 	ExecCount  int32      `bson:"execCount"`
+	Exclusive    bool       `bson:"exclusive"`
 }
 
-func (info Info) CanRestart() bool {
+func (info Meta) CanRestart() bool {
 	if info.ExecOption.MaxRecover == nil {
 		return false
 	}

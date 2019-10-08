@@ -93,11 +93,9 @@ func New(ag Aggregator, wraps ...Wrapper) *Window {
 
 func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	var retErr error
-
 	prob.RunSync(ctx, w.pb, func(ctx context.Context) {
 		if w.mx.Hold(ctx) {
 			defer w.mx.Release()
-
 			if err := w.prepareAccept(ctx); err != nil {
 				retErr = err
 				return
@@ -117,6 +115,7 @@ func (w *Window) Accept(ctx context.Context, input interface{}) error {
 			return
 		}
 	})
+
 	return retErr
 
 }
@@ -160,7 +159,7 @@ func (w *Window) prepareAccept(ctx context.Context) error {
 }
 
 func (w *Window) Current(ctx context.Context) (Whiteboard, bool) {
-	if w.mx.Hold(context.Background()) {
+	if w.mx.Hold(ctx) {
 		defer w.mx.Release()
 		return w.current, true
 	}
@@ -205,12 +204,15 @@ func (w *Window) handleTriggerOn(ctx context.Context, seq uint64, canRetry bool)
 	return ok
 }
 
+var index = 0
+
 func (w *Window) runTriggerHandler(ctx context.Context) {
 	for {
 		select {
 		case <- ctx.Done():
 			return
 		case <- w.triggerChan:
+			index++
 			if w.mx.Hold(ctx) {
 				w.handleTriggerOn(ctx, w.current.Seq, false)
 				w.mx.Release()
