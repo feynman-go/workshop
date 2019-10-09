@@ -8,8 +8,10 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+type WriteConfig kafka.WriterConfig
+
 type PublisherOption struct {
-	Config kafka.WriterConfig
+	WriteConfig WriteConfig
 }
 
 type Publisher struct {
