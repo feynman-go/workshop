@@ -10,7 +10,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,38 +188,30 @@ func(c *Cursor) Next(ctx context.Context) *message.OutputMessage {
 	for c.Err() == nil && ctx.Err() == nil {
 		var err error
 		if c.cs == nil {
-			log.Println("aaaaaa")
 			c.cs, err = c.resetStream(ctx, c.curTimestamp)
 			if err != nil {
-				log.Println("bbbbbbb")
 				c.setErr(fmt.Errorf("reset stream err: %v", err))
 				continue
 			}
 		}
 
-		log.Println("cccccc")
 		if len(c.msgs) > 0 {
 			ret := c.msgs[0]
 			c.msgs = c.msgs[1:]
 			ret.OffsetToken = c.curToken
-			log.Println("ddddd")
 			return ret
 		}
 
-
-		log.Println("eeeee")
 		if !c.cs.Next(ctx) {
 			if ctx.Err() == nil {
-				log.Println("fffffff")
 				c.setErr(c.cs.Err())
 			}
 			continue
 		}
-		log.Println("ggggggg")
+
 		var doc changeDoc
 		err = c.cs.Decode(&doc)
 		if err != nil {
-			log.Println("hhhhhhh")
 			c.setErr(err)
 			continue
 		}
@@ -228,22 +219,17 @@ func(c *Cursor) Next(ctx context.Context) *message.OutputMessage {
 		c.curTimestamp = doc.ClusterTime
 		c.curToken = Resume{c.curTimestamp}.Encode()
 
-		log.Println("iiiiiii")
 		if doc.OperationType == "invalidate" {
-			log.Println("jjjjjjj")
 			c.cs = nil
 			continue
 		}
 
-		log.Println("kkkkkkkkk")
 		msgs, err := c.parser(doc.FullDoc)
 		if err != nil {
-			log.Println("llllllll")
 			c.setErr(err)
 			continue
 		}
 
-		log.Println("mmmmmmmmm")
 		c.msgs = msgs
 	}
 	return nil
