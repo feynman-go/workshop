@@ -2,7 +2,6 @@ package kafka
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/cap/leader"
 	"github.com/feynman-go/workshop/client"
 	"github.com/feynman-go/workshop/message"
 	"github.com/pkg/errors"
@@ -10,9 +9,7 @@ import (
 )
 
 type PublisherOption struct {
-	Addr []string
-	Topic string
-	Partition leader.PartitionID
+	Config kafka.WriterConfig
 }
 
 type Publisher struct {
@@ -37,7 +34,7 @@ func (publisher *Publisher) Publish(ctx context.Context, messages []message.Outp
 		ms := []kafka.Message{}
 		for _, m := range messages {
 			ms = append(ms, kafka.Message {
-				Topic: publisher.opt.Topic,
+				Topic: m.Topic,
 				Key: []byte(m.UID),
 				Value: m.PayLoad,
 				Partition: int(m.Partition),
@@ -58,13 +55,7 @@ func (publisher *Publisher) Publish(ctx context.Context, messages []message.Outp
 }
 
 func newKafkaWriter(opt PublisherOption) *kafka.Writer {
-	wConfig := kafka.WriterConfig{}
-	if opt.Addr != nil {
-		wConfig.Brokers = opt.Addr
-	}
-
-	wConfig.Topic = opt.Topic
-
+	wConfig := opt.Config
 	return kafka.NewWriter(wConfig)
 }
 
