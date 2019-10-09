@@ -8,7 +8,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-type WriteConfig kafka.WriterConfig
+type WriteConfig = kafka.WriterConfig
 
 type PublisherOption struct {
 	WriteConfig WriteConfig
@@ -57,7 +57,7 @@ func (publisher *Publisher) Publish(ctx context.Context, messages []message.Outp
 }
 
 func newKafkaWriter(opt PublisherOption) *kafka.Writer {
-	wConfig := opt.Config
+	wConfig := opt.WriteConfig
 	return kafka.NewWriter(wConfig)
 }
 
