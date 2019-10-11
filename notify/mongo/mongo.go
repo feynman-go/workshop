@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/feynman-go/workshop/database/mgo"
-	"github.com/feynman-go/workshop/message"
+	"github.com/feynman-go/workshop/notify"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -51,7 +51,7 @@ type ResumeStore interface {
 	GetResume(ctx context.Context) (resume Resume, err error)
 }
 
-type Parser func(raw bson.Raw) ([]*message.OutputMessage, error)
+type Parser func(ctx context.Context, raw bson.Raw) ([]*notify.Notification, error)
 
 type MessageStream struct {
 	query bson.D
@@ -95,7 +95,7 @@ func (stream *MessageStream) Close() error {
 	return nil
 }
 
-func (stream *MessageStream) FetchOutputCursor(ctx context.Context) (message.OutputCursor, error) {
+func (stream *MessageStream) FetchOutputCursor(ctx context.Context) (notify.OutputCursor, error) {
 	rm, err := stream.resumeStore.GetResume(ctx)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,7 @@ func (stream *MessageStream) FetchOutputCursor(ctx context.Context) (message.Out
 	return stream.cursorByTimestamp(ctx, rm.Ts)
 }
 
-func (stream *MessageStream) CommitOutput(ctx context.Context, messages []message.OutputMessage) error {
+func (stream *MessageStream) CommitOutput(ctx context.Context, messages []notify.Notification) error {
 	var max *Resume
 	for _, m := range messages {
 		var rm = &Resume{}
@@ -121,7 +121,7 @@ func (stream *MessageStream) CommitOutput(ctx context.Context, messages []messag
 	return nil
 }
 
-func (stream *MessageStream) cursorByTimestamp(ctx context.Context, ts primitive.Timestamp) (message.OutputCursor, error) {
+func (stream *MessageStream) cursorByTimestamp(ctx context.Context, ts primitive.Timestamp) (notify.OutputCursor, error) {
 	return &Cursor{
 		resetStream: stream.getChangeStream,
 		parser: stream.parser,
@@ -178,13 +178,13 @@ type Cursor struct {
 	cs *mongo.ChangeStream
 	resetStream func(ctx context.Context, timestamp primitive.Timestamp) (*mongo.ChangeStream, error)
 	parser Parser
-	msgs []*message.OutputMessage
+	msgs []*notify.Notification
 
 	curTimestamp primitive.Timestamp
 	curToken string
 }
 
-func(c *Cursor) Next(ctx context.Context) *message.OutputMessage {
+func(c *Cursor) Next(ctx context.Context) *notify.Notification {
 	for c.Err() == nil && ctx.Err() == nil {
 		var err error
 		if c.cs == nil {
@@ -224,7 +224,7 @@ func(c *Cursor) Next(ctx context.Context) *message.OutputMessage {
 			continue
 		}
 
-		msgs, err := c.parser(doc.FullDoc)
+		msgs, err := c.parser(ctx, doc.FullDoc)
 		if err != nil {
 			c.setErr(err)
 			continue

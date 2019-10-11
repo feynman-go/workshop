@@ -1,4 +1,4 @@
-package message
+package notify
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 )
 
 type Publisher interface {
-	Publish(ctx context.Context, message []OutputMessage) (err error)
+	Publish(ctx context.Context, notifications []Notification) (err error)
 }
 
 type Notifier struct {
@@ -122,45 +122,40 @@ func (notifier *Notifier) Closed() chan<- struct{} {
 	return notifier.pb.Stopped()
 }
 
-type Message struct {
-	UID       string
-	Partition int64
-	PayLoad   []byte
-	Head      map[string]string
+
+type Notification struct {
+	CreateTime time.Time
+	OffsetToken string
+	Data interface{}
 }
 
-type OutputMessage struct {
-	OffsetToken string
-	Topic       string
-	Message
-}
 
 type Notify struct {
 	CursorID string
 }
 
 type OutputCursor interface {
-	Next(ctx context.Context) *OutputMessage
+	Next(ctx context.Context) *Notification
 	Close(ctx context.Context) error
 	Err() error
 }
 
 type OutputStream interface {
 	FetchOutputCursor(ctx context.Context) (OutputCursor, error)
-	CommitOutput(ctx context.Context, messages []OutputMessage) error
+	CommitOutput(ctx context.Context, notifications []Notification) error
 }
 
 type publishWindow struct {
 	rw        sync.RWMutex
-	msgs      []OutputMessage
+	msgs      []Notification
 	publisher Publisher
 	stream    OutputStream
 	cursor    OutputCursor
 	wd        *window.Window
 }
 
-func (agg *publishWindow) addToPush(ctx context.Context, message OutputMessage) error {
-	return agg.wd.Accept(ctx, message)
+func (agg *publishWindow) addToPush(ctx context.Context, notification Notification) error {
+	return agg.wd.Accept(ctx, notification)
 }
 
 func (agg *publishWindow) close(ctx context.Context) error {
@@ -177,7 +172,7 @@ func (agg *publishWindow) Aggregate(ctx context.Context, input interface{}, item
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
-	msg, ok := input.(OutputMessage)
+	msg, ok := input.(Notification)
 	if !ok {
 		log.Println("input is not message")
 		return errors.New("input must be message")

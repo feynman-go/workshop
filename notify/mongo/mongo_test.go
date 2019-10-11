@@ -59,7 +59,7 @@ func TestBasicStream(t *testing.T) {
 		Fields: map[string]interface {}{
 			"message": bson.M{"$exists": true},
 		},
-	}, func(d bson.Raw) ([]*message.OutputMessage, error) {
+	}, func(ctx context.Context, d bson.Raw) ([]*message.OutputMessage, error) {
 		var doc Doc
 		err := bson.Unmarshal(d, &doc)
 		if err != nil {
@@ -78,7 +78,7 @@ func TestBasicStream(t *testing.T) {
 		return ret, nil
 	})
 
-	cur, err := ms.FetchOutputCursor(context.Background())
+	cur, err := FetchOutputCursor(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

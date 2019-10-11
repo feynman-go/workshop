@@ -1,4 +1,4 @@
-package message
+package notify
 
 import (
 	"context"
@@ -24,7 +24,7 @@ type MemoCursor struct {
 	startIndex uint64
 }
 
-func (cursor *MemoCursor) Next(ctx context.Context) *OutputMessage {
+func (cursor *MemoCursor) Next(ctx context.Context) *Notification {
 	tk := time.NewTicker(time.Second)
 	defer tk.Stop()
 	for ctx.Err() == nil {
@@ -54,7 +54,7 @@ func (cursor *MemoCursor) Next(ctx context.Context) *OutputMessage {
 			}
 		} else {
 			cursor.e = next
-			return next.GetValue().(msgContainer).Message
+			return next.GetValue().(msgContainer).Ntf
 		}
 	}
 	return nil
@@ -101,7 +101,7 @@ func NewMemoMessageStream() *MemoMessageStream {
 	return stream
 }
 
-func (stream *MemoMessageStream) Push(topic string, msg Message) uint64 {
+func (stream *MemoMessageStream) Push(notification Notification) uint64 {
 	stream.rw.Lock()
 
 	var idx uint64
@@ -113,15 +113,13 @@ func (stream *MemoMessageStream) Push(topic string, msg Message) uint64 {
 		idx = 1
 	}
 
-	output := &OutputMessage{
-		Message: msg,
-		Topic: topic,
+	output := &Notification{
 		OffsetToken: stream.formatIndex(idx),
 	}
 
 	stream.ll.Insert(msgContainer{
 		Index: idx,
-		Message: output,
+		Ntf:   output,
 	})
 
 	stream.rw.Unlock()
@@ -187,7 +185,7 @@ func (stream *MemoMessageStream) parseToken(resumeToken string) (uint64, error) 
 	return index, nil
 }
 
-func (stream *MemoMessageStream) CommitOutput(ctx context.Context, msgs []OutputMessage) error {
+func (stream *MemoMessageStream) CommitOutput(ctx context.Context, msgs []Notification) error {
 	var maxIdx uint64 = 0
 	for _, m := range msgs {
 		idx, err := stream.parseToken(m.OffsetToken)
@@ -288,7 +286,7 @@ func (stream *MemoMessageStream) GetLastIndex() uint64 {
 
 type msgContainer struct {
 	Index uint64
-	Message *OutputMessage
+	Ntf   *Notification
 }
 
 func (m msgContainer) ExtractKey() float64 {
