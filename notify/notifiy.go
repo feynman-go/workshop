@@ -12,16 +12,54 @@ import (
 	"time"
 )
 
-type Publisher interface {
+/*type Publisher interface {
 	Publish(ctx context.Context, notifications []Notification) (err error)
+}*/
+
+type Iterator struct {
+	b []Notification
+	notifier *notifier
 }
 
-type Notifier struct {
+// init iterator is empty
+func NewIterator(stream OutputStream, option Option) *Iterator {
+	nf := newNotifier(stream, option)
+	return &Iterator{
+		b: nil,
+		notifier: nf,
+	}
+}
+
+func (iterator *Iterator) Batch() []Notification {
+	return iterator.b
+}
+
+func (iterator *Iterator) CommitAndWaitNext(ctx context.Context) (*Iterator, error) {
+	err := iterator.notifier.commit(ctx, iterator.b)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case ns := <- iterator.notifier.cn:
+		return &Iterator{
+			b:        ns,
+			notifier: iterator.notifier,
+		}, nil
+	case <- ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (iterator *Iterator) Close(ctx context.Context) error {
+	return iterator.notifier.Close(ctx)
+}
+
+type notifier struct {
 	pb        *prob.Prob
 	stream    OutputStream
-	publisher Publisher
-	wrappers  []window.Wrapper
 	option    Option
+	cn chan []Notification
+	wd 		*window.Window
 }
 
 type Option struct {
@@ -29,24 +67,24 @@ type Option struct {
 	MaxBlockDuration time.Duration
 	FailedWait       time.Duration
 	StreamMiddles    []OutputStreamMiddle
-	PublishMiddles   []PublisherMiddle
 	CloseTimeOut     time.Duration
 }
 
-func New(stream OutputStream, publisher Publisher, option Option) *Notifier {
+func newNotifier(stream OutputStream, option Option) *notifier {
 	for _, mid := range option.StreamMiddles {
 		stream = mid.WrapStream(stream)
 	}
-
-	ret := &Notifier{
+	ret := &notifier{
 		stream:    stream,
-		publisher: publisher,
+		cn: make(chan []Notification, 6),
 	}
 	ret.pb = prob.New(ret.run)
-
 	var wrappers []window.Wrapper
 	if option.MaxBlockCount <= 0 {
 		option.MaxBlockCount = 1
+	}
+	if option.MaxBlockDuration <= 0 {
+		option.MaxBlockDuration = time.Second
 	}
 
 	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxBlockCount)))
@@ -54,33 +92,35 @@ func New(stream OutputStream, publisher Publisher, option Option) *Notifier {
 		wrappers = append(wrappers, window.DurationWrapper(option.MaxBlockDuration))
 	}
 
-	ret.wrappers = wrappers
+	ret.wd = ret.newPublishWindow(wrappers)
 	ret.pb.Start()
 	return ret
 }
 
-func (notifier *Notifier) Start() {
+func (notifier *notifier) start() {
 	notifier.pb.Start()
 }
 
-func (notifier *Notifier) newPublishWindow(cursor OutputCursor) *publishWindow {
-	pub := notifier.publisher
-	for _, mid := range notifier.option.PublishMiddles {
-		pub = mid.WrapPublisher(pub)
-	}
-
-	ret := &publishWindow{
-		publisher: pub,
-		stream:    notifier.stream,
-		cursor: 	cursor,
-	}
-
-	ret.wd = window.New(ret, notifier.wrappers...)
-	return ret
+func (notifier *notifier) commit(ctx context.Context, batch []Notification) error {
+	return notifier.stream.CommitOutput(ctx, batch)
 }
 
-func (notifier *Notifier) run(ctx context.Context) {
+func (notifier *notifier) newPublishWindow(wrappers []window.Wrapper) *window.Window {
+	ret := &publishWindow{
+		batchChan: notifier.cn,
+	}
+	wd := window.New(ret, ret, wrappers...)
+	return wd
+}
+
+func (notifier *notifier) run(ctx context.Context) {
 	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+		ok, err := notifier.wd.WaitUntilOk(ctx)
+		if err != nil || !ok {
+			log.Println("wait window ok err:", err)
+			return true
+		}
+
 		stream := notifier.stream
 		cursor, err := stream.FetchOutputCursor(ctx)
 		if err != nil {
@@ -88,38 +128,42 @@ func (notifier *Notifier) run(ctx context.Context) {
 			return true
 		}
 
-		pw := notifier.newPublishWindow(cursor)
-
 		defer func() {
 			closeCtx := context.Background()
 			if notifier.option.CloseTimeOut != 0 {
 				closeCtx, _ = context.WithTimeout(closeCtx, notifier.option.CloseTimeOut)
 			}
-			err := pw.close(closeCtx)
+			err := cursor.Close(closeCtx)
 			if err != nil {
 				log.Println("cursor close err:", err)
 			}
 		}()
 
+
 		for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
-			err := pw.addToPush(ctx, *msg)
+			err = notifier.wd.Accept(ctx, *msg)
 			if err != nil {
 				log.Println("push message err:", err)
 				break
 			}
 		}
-
 		return true
-	}, syncrun.RandRestart(time.Second, 5*time.Second))(ctx)
+	}, syncrun.RandRestart(time.Second, 3 * time.Second))(ctx)
 }
 
-func (notifier *Notifier) Close() error {
+func (notifier *notifier) Close(ctx context.Context) error {
 	notifier.pb.Stop()
-	return nil
-}
+	err := notifier.wd.Close(ctx)
+	if err != nil {
+		return err
+	}
 
-func (notifier *Notifier) Closed() chan<- struct{} {
-	return notifier.pb.Stopped()
+	select {
+	case <- notifier.pb.Stopped():
+	case <- ctx.Done():
+		return ctx.Err()
+	}
+	return nil
 }
 
 
@@ -127,11 +171,6 @@ type Notification struct {
 	CreateTime time.Time
 	OffsetToken string
 	Data interface{}
-}
-
-
-type Notify struct {
-	CursorID string
 }
 
 type OutputCursor interface {
@@ -148,27 +187,16 @@ type OutputStream interface {
 type publishWindow struct {
 	rw        sync.RWMutex
 	msgs      []Notification
-	publisher Publisher
-	stream    OutputStream
-	cursor    OutputCursor
-	wd        *window.Window
+	whiteboard window.Whiteboard
+	batchChan chan []Notification
 }
 
-func (agg *publishWindow) addToPush(ctx context.Context, notification Notification) error {
-	return agg.wd.Accept(ctx, notification)
-}
-
-func (agg *publishWindow) close(ctx context.Context) error {
-	select {
-	case <-agg.wd.Closed():
-		return errors.New("closed")
-	default:
-		return agg.wd.Close(ctx)
-	}
+func (agg *publishWindow) Reset(whiteboard window.Whiteboard) {
+	agg.whiteboard = whiteboard
 }
 
 // imply interface for window
-func (agg *publishWindow) Aggregate(ctx context.Context, input interface{}, item window.Whiteboard) (err error) {
+func (agg *publishWindow) Accept(ctx context.Context, input interface{}) (err error) {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
@@ -183,22 +211,16 @@ func (agg *publishWindow) Aggregate(ctx context.Context, input interface{}, item
 }
 
 // imply interface for window
-func (agg *publishWindow) OnTrigger(ctx context.Context) error {
+func (agg *publishWindow) Materialize(ctx context.Context) error {
 	agg.rw.Lock()
 	defer agg.rw.Unlock()
 
 	if len(agg.msgs) != 0 {
-		err := agg.publisher.Publish(ctx, agg.msgs)
-		if err != nil {
-			log.Println("publisher push message err:", err)
-			return err
-		}
-		err = agg.stream.CommitOutput(ctx, agg.msgs)
-		if err != nil {
-			return fmt.Errorf("store resume token err: %v", err)
-		}
-		if agg.msgs != nil {
-			agg.msgs = agg.msgs[:0]
+		select {
+		case agg.batchChan <- agg.msgs:
+			agg.msgs = nil
+		default:
+			return fmt.Errorf("publisher push message block")
 		}
 		return nil
 	}
@@ -208,8 +230,4 @@ func (agg *publishWindow) OnTrigger(ctx context.Context) error {
 
 type OutputStreamMiddle interface {
 	WrapStream(stream OutputStream) OutputStream
-}
-
-type PublisherMiddle interface {
-	WrapPublisher(publisher Publisher) Publisher
 }

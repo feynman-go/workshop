@@ -6,19 +6,19 @@ import (
 	"time"
 )
 
-var _ Aggregator = (*DurationTrigger)(nil)
+var _ Acceptor = (*DurationTrigger)(nil)
 type DurationTrigger struct {
-	rw sync.RWMutex
+	rw        sync.RWMutex
 	startTime time.Time
-	tm *time.Timer
-	trigger *Trigger
-	seq uint64
-	duration time.Duration
-	inner Aggregator
+	tm        *time.Timer
+	trigger   *Trigger
+	seq       uint64
+	duration  time.Duration
+	inner     Acceptor
 }
 
 func DurationWrapper(duration time.Duration) Wrapper {
-	return func(in Aggregator) Aggregator {
+	return func(in Acceptor) Acceptor {
 		return &DurationTrigger {
 			duration: duration,
 			inner: in,
@@ -26,16 +26,13 @@ func DurationWrapper(duration time.Duration) Wrapper {
 	}
 }
 
-func (trigger *DurationTrigger) Aggregate(ctx context.Context, input interface{}, item Whiteboard) (err error) {
+func (trigger *DurationTrigger) Accept(ctx context.Context, input interface{}) (err error) {
 	if trigger.inner != nil {
-		return trigger.inner.Aggregate(ctx, input, item)
+		return trigger.inner.Accept(ctx, input)
 	}
 
 	trigger.rw.Lock()
 	defer trigger.rw.Unlock()
-
-	trigger.seq = item.Seq
-	trigger.trigger = item.Trigger
 
 	if trigger.tm == nil {
 		trigger.tm = time.AfterFunc(trigger.duration, func() {
@@ -44,18 +41,16 @@ func (trigger *DurationTrigger) Aggregate(ctx context.Context, input interface{}
 			if t := trigger.trigger; t != nil && !t.Triggered(){
 				t.Trigger()
 			}
+			trigger.tm = nil
 		})
 	}
 
 	return nil
 }
 
-func (trigger *DurationTrigger) OnTrigger(ctx context.Context) error {
+func (trigger *DurationTrigger) Reset(whiteboard Whiteboard) {
 	if trigger.inner != nil {
-		err := trigger.inner.OnTrigger(ctx)
-		if err != nil {
-			return err
-		}
+		trigger.inner.Reset(whiteboard)
 	}
 
 	trigger.rw.Lock()
@@ -71,21 +66,24 @@ func (trigger *DurationTrigger) OnTrigger(ctx context.Context) error {
 		trigger.tm.Reset(trigger.duration)
 		trigger.trigger = nil
 	}
-	return nil
+
+	trigger.seq = whiteboard.Seq
+	trigger.trigger = whiteboard.Trigger
+	return
 }
 
-
-var _ Aggregator = (*CountAggregator)(nil)
+var _ Acceptor = (*CountAggregator)(nil)
 type CountAggregator struct {
-	rw sync.RWMutex
+	rw       sync.RWMutex
 	maxCount uint64
-	seq uint64
-	count uint64
-	inner Aggregator
+	seq      uint64
+	count    uint64
+	inner    Acceptor
+	trigger *Trigger
 }
 
 func CounterWrapper(maxCount uint64) Wrapper {
-	return func(in Aggregator) Aggregator {
+	return func(in Acceptor) Acceptor {
 		return &CountAggregator{
 			maxCount: maxCount,
 			inner: in,
@@ -93,27 +91,26 @@ func CounterWrapper(maxCount uint64) Wrapper {
 	}
 }
 
-func (ca *CountAggregator) Aggregate(ctx context.Context, input interface{}, item Whiteboard) (err error) {
+func (ca *CountAggregator) Accept(ctx context.Context, input interface{}) (err error) {
 	ca.rw.Lock()
 	defer ca.rw.Unlock()
 
 	if ca.inner != nil {
-		err = ca.inner.Aggregate(ctx, input, item)
+		err = ca.inner.Accept(ctx, input)
 		if err != nil {
 			return err
 		}
 	}
 
-	ca.seq = item.Seq
 	ca.count ++
 	ct := ca.count
 	if ca.maxCount <= ct {
-		item.Trigger.Trigger()
+		ca.trigger.Trigger()
 	}
 	return nil
 }
 
-func (ca *CountAggregator) OnTrigger(ctx context.Context) error {
+func (ca *CountAggregator) Reset(whiteboard Whiteboard) {
 	ca.rw.Lock()
 	defer ca.rw.Unlock()
 	defer func() {
@@ -121,8 +118,8 @@ func (ca *CountAggregator) OnTrigger(ctx context.Context) error {
 	}()
 
 	if ca.inner != nil {
-		return ca.inner.OnTrigger(ctx)
+		ca.inner.Reset(whiteboard)
 	}
-
-	return nil
+	ca.trigger = whiteboard.Trigger
+	ca.seq = whiteboard.Seq
 }

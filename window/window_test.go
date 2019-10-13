@@ -8,39 +8,54 @@ import (
 	"time"
 )
 
-var _ Aggregator = (*MockAggregator)(nil)
+var _ Acceptor = (*MockAggregator)(nil)
 
 type MockAggregator struct {
-	AggregateFunc func(ctx context.Context, input interface{}, item Whiteboard) (err error)
-	OnTriggerFunc func(ctx context.Context) error
+	AcceptFunc      func(ctx context.Context, input interface{}) (err error)
+	ResetFunc       func(whiteboard Whiteboard)
+	MaterializeFunc func(ctx context.Context) error
 }
 
-func (aggregator MockAggregator) Aggregate(ctx context.Context, input interface{}, item Whiteboard, ) (err error) {
-	if aggregator.AggregateFunc == nil {
+func (aggregator MockAggregator) Accept(ctx context.Context, input interface{}) (err error) {
+	if aggregator.AcceptFunc == nil {
 		return nil
 	}
-	return aggregator.AggregateFunc(ctx, input, item)
+	return aggregator.AcceptFunc(ctx, input)
 }
 
-func (aggregator MockAggregator) OnTrigger(ctx context.Context) (err error) {
-	if aggregator.OnTriggerFunc == nil {
+func (aggregator MockAggregator) Reset(whiteboard Whiteboard) {
+	if aggregator.ResetFunc == nil {
+		return
+	}
+	aggregator.ResetFunc(whiteboard)
+	return
+}
+
+func (aggregator MockAggregator) Materialize(ctx context.Context) error {
+	if aggregator.MaterializeFunc == nil {
 		return nil
 	}
-	return aggregator.OnTriggerFunc(ctx)
+	return aggregator.MaterializeFunc(ctx)
 }
 
 
 func TestWindowInputAndTrigger(t *testing.T) {
 	var aggregated int32
 	var triggered int32
+	var wb Whiteboard
 	wd := New(MockAggregator{
-		AggregateFunc: func(ctx context.Context, input interface{}, item Whiteboard) error {
+		ResetFunc: func(whiteboard Whiteboard) {
+			wb = whiteboard
+			return
+		},
+		AcceptFunc: func(ctx context.Context, input interface{}) error {
 			if atomic.AddInt32(&aggregated, 1) > 2 {
-				item.Trigger.Trigger()
+				wb.Trigger.Trigger()
 			}
 			return nil
 		},
-		OnTriggerFunc: func(ctx context.Context) error {
+	}, MockAggregator{
+		MaterializeFunc: func(ctx context.Context) error {
 			atomic.AddInt32(&triggered, 1)
 			return nil
 		},
@@ -75,14 +90,20 @@ func TestWindowInputAndTrigger(t *testing.T) {
 func TestWindowInputAndTriggerErr(t *testing.T) {
 	var aggregated int32
 	var triggered int32
+	var wb Whiteboard
 	wd := New(MockAggregator{
-		AggregateFunc: func(ctx context.Context, input interface{}, item Whiteboard) error {
+		AcceptFunc: func(ctx context.Context, input interface{}) error {
 			if atomic.AddInt32(&aggregated, 1) > 2 {
-				item.Trigger.Trigger()
+				wb.Trigger.Trigger()
 			}
 			return nil
 		},
-		OnTriggerFunc: func(ctx context.Context) error {
+		ResetFunc: func(whiteboard Whiteboard) {
+			wb = whiteboard
+		},
+
+	}, MockAggregator{
+		MaterializeFunc: func(ctx context.Context) error {
 			if atomic.AddInt32(&triggered, 1) == 1 {
 				return errors.New("trigger err")
 			}
@@ -107,27 +128,28 @@ func TestWindowInputAndTriggerErr(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
+	err = wd.Accept(context.Background(), nil)
+	if err == nil {
+		t.Fatal("should return err")
+	}
+
+	wb.Trigger.Trigger()
+	time.Sleep(100 * time.Millisecond)
+
 	if aggregated != 3 {
 		t.Fatal("bad aggregated count", aggregated)
 	}
 
-	if triggered != 1 {
+	if triggered != 2 {
 		t.Fatal("bad triggered count", triggered)
 	}
-
-	err = wd.Accept(context.Background(), nil)
-	if err == nil {
-		t.Fatal("accept should err after trigger err")
-	}
-
-	wd.ClearErr(context.Background())
-	time.Sleep(100 * time.Millisecond)
 
 	err = wd.Accept(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	time.Sleep(100 * time.Millisecond)
 	if triggered != 3 {
 		t.Fatal("bad triggered count", triggered)
 	}
@@ -135,12 +157,13 @@ func TestWindowInputAndTriggerErr(t *testing.T) {
 
 func TestWindowInvokeCount(t *testing.T) {
 	var triggered int32
-	wd := New(MockAggregator{
-		OnTriggerFunc: func(ctx context.Context) error {
+	ag := MockAggregator{
+		MaterializeFunc: func(ctx context.Context) error {
 			atomic.AddInt32(&triggered, 1)
 			return nil
 		},
-	}, CounterWrapper(3))
+	}
+	wd := New(ag, ag, CounterWrapper(3))
 
 	err := wd.Accept(context.Background(), nil)
 	if err != nil {
@@ -201,12 +224,10 @@ func TestWindowInvokeCount(t *testing.T) {
 	}
 }
 
-
-
 func TestWindowInvokeZeroCount(t *testing.T) {
 	var triggered int32
-	wd := New(MockAggregator{
-		OnTriggerFunc: func(ctx context.Context) error {
+	wd := New(MockAggregator{},  MockAggregator{
+		MaterializeFunc: func(ctx context.Context) error {
 			atomic.AddInt32(&triggered, 1)
 			return nil
 		},

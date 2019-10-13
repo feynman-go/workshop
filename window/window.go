@@ -2,7 +2,6 @@ package window
 
 import (
 	"context"
-	"fmt"
 	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/pkg/errors"
@@ -10,21 +9,28 @@ import (
 	"time"
 )
 
-type Aggregator interface {
-	Aggregate(ctx context.Context, input interface{}, item Whiteboard) (err error)
-	OnTrigger(ctx context.Context) error
+type Acceptor interface {
+	Accept(ctx context.Context, input interface{}) (err error)
+	Reset(whiteboard Whiteboard)
 }
 
-type EmptyAggregator struct {}
-func (agg EmptyAggregator) Aggregate(ctx context.Context, input interface{}, item Whiteboard) (err error){return nil}
-func (agg EmptyAggregator) OnTrigger(ctx context.Context) error{return nil}
+type Materializer interface {
+	Materialize(ctx context.Context) error
+}
 
-type Wrapper func(Aggregator) Aggregator
+type EmptyAggregator struct{}
+
+func (agg EmptyAggregator) Accept(ctx context.Context, input interface{}) (err error) { return nil }
+func (agg EmptyAggregator) Reset(whiteboard Whiteboard)                               { return }
+func (agg EmptyAggregator) Materialize(ctx context.Context) error                     { return nil }
+
+type Wrapper func(Acceptor) Acceptor
+type MaterializerWrapper func(Materializer) Materializer
 
 type Trigger struct {
-	rw sync.RWMutex
+	rw        sync.RWMutex
 	triggered bool
-	cn chan struct{}
+	cn        chan struct{}
 }
 
 func (tm *Trigger) Trigger() {
@@ -40,6 +46,12 @@ func (tm *Trigger) Trigger() {
 	}
 }
 
+func (tm *Trigger) ResetTrigger() {
+	tm.rw.Lock()
+	defer tm.rw.Unlock()
+	tm.triggered = false
+}
+
 func (tm *Trigger) Triggered() bool {
 	tm.rw.RLock()
 	defer tm.rw.RUnlock()
@@ -47,23 +59,25 @@ func (tm *Trigger) Triggered() bool {
 }
 
 type Whiteboard struct {
-	StartTime    time.Time
-	Seq          uint64
-	TriggerErr   error
-	HasTriggered bool
-	Trigger      *Trigger
+	StartTime time.Time
+	Seq       uint64
+	Trigger   *Trigger
+	Err       error
+	triggered chan struct{}
 }
 
 type Window struct {
-	current     Whiteboard
-	needTrigger bool
-	aggregator  Aggregator
-	pb          *prob.Prob
-	triggerChan chan struct{}
-	mx          *mutex.Mutex
+	current       Whiteboard
+	needTrigger   bool
+	acceptor      Acceptor
+	pb            *prob.Prob
+	triggerChan   chan struct{}
+	mx            *mutex.Mutex
+	materializer  Materializer
+	errClearChan  chan struct{}
 }
 
-func New(ag Aggregator, wraps ...Wrapper) *Window {
+func New(ag Acceptor, materializer Materializer, wraps ...Wrapper) *Window {
 	triggerChan := make(chan struct{}, 1)
 
 	if ag == nil {
@@ -75,33 +89,36 @@ func New(ag Aggregator, wraps ...Wrapper) *Window {
 	}
 
 	wd := &Window{
-		aggregator: ag,
-		mx: &mutex.Mutex{},
+		acceptor:    ag,
+		mx:          &mutex.Mutex{},
 		triggerChan: triggerChan,
-		current: Whiteboard {
+		current: Whiteboard{
 			StartTime: time.Now(),
-			Seq: 0,
+			Seq:       0,
 			Trigger: &Trigger{
 				cn: triggerChan,
 			},
 		},
+		materializer: materializer,
 	}
 	wd.pb = prob.New(wd.runTriggerHandler)
+	ag.Reset(wd.current)
 	wd.pb.Start()
 	return wd
 }
 
 func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	var retErr error
-	prob.RunSync(ctx, w.pb, func(ctx context.Context) {
-		if w.mx.Hold(ctx) {
-			defer w.mx.Release()
-			if err := w.prepareAccept(ctx); err != nil {
-				retErr = err
+	runSync := prob.RunSync(ctx, w.pb, func(ctx context.Context) {
+		if w.mx.HoldForRead(ctx) {
+			defer w.mx.ReleaseForRead()
+
+			if w.current.Err != nil {
+				retErr = w.current.Err
 				return
 			}
 
-			err := w.aggregator.Aggregate(ctx, input, w.current)
+			err := w.acceptor.Accept(ctx, input)
 			if err != nil {
 				retErr = err
 				return
@@ -116,46 +133,42 @@ func (w *Window) Accept(ctx context.Context, input interface{}) error {
 		}
 	})
 
-	return retErr
+	if !runSync {
+		return errors.New("closed")
+	}
 
+	return retErr
 }
 
 func (w *Window) Close(ctx context.Context) error {
 	if w.mx.Hold(ctx) {
 		defer w.mx.Release()
-		w.aggregator.OnTrigger(ctx)
 		w.pb.Stop()
 	}
 	return nil
 }
 
-func (w *Window) Closed() <- chan struct{} {
+func (w *Window) WaitUntilOk(ctx context.Context) (bool, error) {
+	if w.mx.HoldForRead(ctx) {
+		clearChan := w.errClearChan
+		w.mx.ReleaseForRead()
+
+		if clearChan == nil {
+			return true, nil
+		}
+
+		select {
+		case <- ctx.Done():
+			return false, ctx.Err()
+		case <- clearChan:
+			return true, nil
+		}
+	}
+	return false, ctx.Err()
+}
+
+func (w *Window) Closed() <-chan struct{} {
 	return w.pb.Stopped()
-}
-
-func (w *Window) ClearErr(ctx context.Context) bool {
-	if w.mx.Hold(ctx) {
-		defer w.mx.Release()
-		w.current.TriggerErr = nil
-		if w.current.HasTriggered { // re Trigger after clear err
-			return w.handleTriggerOn(ctx, w.current.Seq, true)
-		}
-		return true
-	}
-	return false
-}
-
-func (w *Window) prepareAccept(ctx context.Context) error {
-	if w.current.TriggerErr != nil {
-		return w.current.TriggerErr
-	}
-	if w.current.Trigger.Triggered() {
-		if w.handleTriggerOn(ctx, w.current.Seq, false) {
-			return nil
-		}
-		return fmt.Errorf("failed to Trigger current %v", w.current.TriggerErr)
-	}
-	return nil
 }
 
 func (w *Window) Current(ctx context.Context) (Whiteboard, bool) {
@@ -174,47 +187,50 @@ func (w *Window) handleTriggerOn(ctx context.Context, seq uint64, canRetry bool)
 			ok = false
 			return
 		}
-		if w.current.HasTriggered && !canRetry {
-			ok = false
-			return
+
+		if w.materializer != nil {
+			err := w.materializer.Materialize(ctx)
+			if err != nil {
+				w.current.Err = err
+				if w.errClearChan == nil {
+					w.errClearChan = make(chan struct{})
+				}
+				ok = false
+				return
+			}
 		}
 
-		last := w.current
 		newSeq := seq + 1
-		newBoard := Whiteboard {
+		newBoard := Whiteboard{
 			StartTime: time.Now(),
 			Seq:       newSeq,
 			Trigger: &Trigger{
 				cn: w.triggerChan,
 			},
 		}
-
-		err := w.aggregator.OnTrigger(ctx)
-		last.HasTriggered = true
-		if err != nil {
-			last.TriggerErr = err
-			w.current = last
-			ok = false
-			return
-		}
+		w.acceptor.Reset(newBoard)
 		w.current = newBoard
 		ok = true
+
+		if w.errClearChan != nil {
+			close(w.errClearChan)
+		}
+		w.errClearChan = nil
 		return
 	})
+
 	return ok
 }
-
-var index = 0
 
 func (w *Window) runTriggerHandler(ctx context.Context) {
 	for {
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return
-		case <- w.triggerChan:
-			index++
+		case <-w.triggerChan:
 			if w.mx.Hold(ctx) {
 				w.handleTriggerOn(ctx, w.current.Seq, false)
+				w.current.Trigger.ResetTrigger()
 				w.mx.Release()
 			}
 		}
