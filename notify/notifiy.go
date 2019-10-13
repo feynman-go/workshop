@@ -120,8 +120,8 @@ func (notifier *notifier) newPublishWindow(wrappers []window.Wrapper) *window.Wi
 
 func (notifier *notifier) run(ctx context.Context) {
 	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
-		ok, err := notifier.wd.WaitUntilOk(ctx)
-		if err != nil || !ok {
+		err := notifier.wd.WaitUntilOk(ctx)
+		if err != nil {
 			log.Println("wait window ok err:", err)
 			return true
 		}

@@ -61,7 +61,7 @@ func (client *Client) CloseWithContext(ctx context.Context) error {
 		if atomic.LoadInt32(&client.closed) > 0 {
 			return errors.New("closed")
 		}
-		err := client.agent.Close(ctx)
+		err := client.agent.CloseWithContext(ctx)
 		if err != nil {
 			return err
 		}

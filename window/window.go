@@ -150,23 +150,23 @@ func (w *Window) CloseWithContext(ctx context.Context) error {
 	}
 }
 
-func (w *Window) WaitUntilOk(ctx context.Context) (bool, error) {
+func (w *Window) WaitUntilOk(ctx context.Context) error {
 	if w.mx.HoldForRead(ctx) {
 		clearChan := w.errClearChan
 		w.mx.ReleaseForRead()
 
 		if clearChan == nil {
-			return true, nil
+			return nil
 		}
 
 		select {
 		case <- ctx.Done():
-			return false, ctx.Err()
+			return ctx.Err()
 		case <- clearChan:
-			return true, nil
+			return nil
 		}
 	}
-	return false, ctx.Err()
+	return errors.New("hold err")
 }
 
 func (w *Window) Closed() <-chan struct{} {
