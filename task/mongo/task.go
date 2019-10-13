@@ -121,7 +121,7 @@ func(ts *TaskScheduler) WaitTaskAwaken(ctx context.Context) (awaken task.Awaken,
 	}
 }
 
-func (ts *TaskScheduler) Close(ctx context.Context) error {
+func (ts *TaskScheduler) CloseWithContext(ctx context.Context) error {
 	ts.pb.Stop()
 	select {
 	case <- ctx.Done():

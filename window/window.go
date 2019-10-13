@@ -140,12 +140,14 @@ func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	return retErr
 }
 
-func (w *Window) Close(ctx context.Context) error {
-	if w.mx.Hold(ctx) {
-		defer w.mx.Release()
-		w.pb.Stop()
+func (w *Window) CloseWithContext(ctx context.Context) error {
+	w.pb.Stop()
+	select {
+	case <- ctx.Done():
+		return ctx.Err()
+	case <- w.pb.Stopped():
+		return nil
 	}
-	return nil
 }
 
 func (w *Window) WaitUntilOk(ctx context.Context) (bool, error) {

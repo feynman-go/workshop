@@ -235,7 +235,7 @@ func(c *Cursor) Next(ctx context.Context) *notify.Notification {
 	return nil
 }
 
-func(c *Cursor) Close(ctx context.Context) error {
+func(c *Cursor) CloseWithContext(ctx context.Context) error {
 	if c.cs != nil {
 		return c.cs.Close(ctx)
 	}

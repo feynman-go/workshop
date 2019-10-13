@@ -180,7 +180,7 @@ func (reader *partReader) Reset(ctx context.Context) error {
 	return nil
 }
 
-func (reader *partReader) Close(ctx context.Context) error {
+func (reader *partReader) CloseWithContext(ctx context.Context) error {
 	return reader.reader.Close()
 }
 

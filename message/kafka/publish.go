@@ -91,7 +91,7 @@ func (agent *publishAgent) Reset(ctx context.Context) error {
 	return nil
 }
 
-func (agent *publishAgent) Close(ctx context.Context) error {
+func (agent *publishAgent) CloseWithContext(ctx context.Context) error {
 	if agent.closed {
 		return errors.New("closed")
 	}

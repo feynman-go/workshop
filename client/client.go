@@ -51,7 +51,7 @@ func New(agent Agent, option Option) *Client {
 	return clt
 }
 
-func (client *Client) Close(ctx context.Context) error {
+func (client *Client) CloseWithContext(ctx context.Context) error {
 	if atomic.LoadInt32(&client.closed) > 0 {
 		return errors.New("closed")
 	}
@@ -119,7 +119,7 @@ func (client *Client) getPromiseMiddles(opt ActionOption) []promise.Middle {
 }
 
 type Agent interface {
-	Close(ctx context.Context) error
+	CloseWithContext(ctx context.Context) error
 }
 
 type ActionOption struct {

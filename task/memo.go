@@ -80,7 +80,7 @@ func NewMemoScheduler(defaultKeepLiveDuration time.Duration) *MemoScheduler {
 	}
 }
 
-func (scheduler *MemoScheduler) Close(ctx context.Context) error {
+func (scheduler *MemoScheduler) CloseWithContext(ctx context.Context) error {
 	scheduler.rw.RLock()
 	defer scheduler.rw.RUnlock()
 	for _, t := range scheduler.tasks {

@@ -37,6 +37,6 @@ func (instance *Instance) Start() {
 	instance.srv.Start()
 }
 
-func (instance *Instance) Close(ctx context.Context) error {
-	return instance.srv.Close(ctx)
+func (instance *Instance) CloseWithContext(ctx context.Context) error {
+	return instance.srv.CloseWithContext(ctx)
 }

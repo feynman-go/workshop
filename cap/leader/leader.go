@@ -262,12 +262,12 @@ func (mb *Member) Start() bool {
 	}
 }
 
-func (mb *Member) Close(ctx context.Context) error {
+func (mb *Member) CloseWithContext(ctx context.Context) error {
 	mb.rw.Lock()
 	defer mb.rw.Unlock()
 	if mb.pb != nil {
 		mb.pb.Stop()
-		defer mb.tasks.Close(ctx)
+		defer mb.tasks.CloseWithContext(ctx)
 		select {
 		case <- mb.pb.Stopped():
 		case <- ctx.Done():

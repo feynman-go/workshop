@@ -76,8 +76,8 @@ func (wrapper recorderWrapper) NewStageID(ctx context.Context, taskKey string) (
 	return wrapper.scheduler.NewStageID(ctx, taskKey)
 }
 
-func(wrapper recorderWrapper) Close(ctx context.Context) error {
-	return wrapper.scheduler.Close(ctx)
+func(wrapper recorderWrapper) CloseWithContext(ctx context.Context) error {
+	return wrapper.scheduler.CloseWithContext(ctx)
 }
 
 func(wrapper recorderWrapper) Execute(ctx Context, res *Result) {

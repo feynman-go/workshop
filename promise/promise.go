@@ -175,7 +175,7 @@ func (p *Promise) Wait(ctx context.Context, close bool) error {
 		defer p.Close()
 	}
 	p.Start(ctx)
-	err := p.waitClose(ctx)
+	err := p.CloseWithContext(ctx)
 	return err
 }
 
@@ -411,7 +411,7 @@ func (s *chanStatus) isClosed() bool {
 	}
 }
 
-func (s *chanStatus) waitClose(ctx context.Context) error {
+func (s *chanStatus) CloseWithContext(ctx context.Context) error {
 	select {
 	case <-s.closeChan:
 		if s.err != nil {

@@ -163,8 +163,8 @@ func (mgo *DbClient) DoWithPartition(ctx context.Context, part int, action func(
 	}, actionOpt)
 }
 
-func (mgo *DbClient) Close(ctx context.Context) error {
-	return mgo.clt.Close(ctx)
+func (mgo *DbClient) CloseWithContext(ctx context.Context) error {
+	return mgo.clt.CloseWithContext(ctx)
 }
 
 type majorAgent struct {
@@ -219,7 +219,7 @@ func (agent *majorAgent) TryRecovery(ctx context.Context) error {
 	return nil
 }
 
-func (agent *majorAgent) Close(ctx context.Context) error {
+func (agent *majorAgent) CloseWithContext(ctx context.Context) error {
 	clt := agent.db.Client()
 	err := clt.Disconnect(ctx)
 	return err

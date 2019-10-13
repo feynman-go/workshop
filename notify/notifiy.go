@@ -50,8 +50,8 @@ func (iterator *Iterator) CommitAndWaitNext(ctx context.Context) (*Iterator, err
 	}
 }
 
-func (iterator *Iterator) Close(ctx context.Context) error {
-	return iterator.notifier.Close(ctx)
+func (iterator *Iterator) CloseWithContext(ctx context.Context) error {
+	return iterator.notifier.CloseWithContext(ctx)
 }
 
 type notifier struct {
@@ -133,7 +133,7 @@ func (notifier *notifier) run(ctx context.Context) {
 			if notifier.option.CloseTimeOut != 0 {
 				closeCtx, _ = context.WithTimeout(closeCtx, notifier.option.CloseTimeOut)
 			}
-			err := cursor.Close(closeCtx)
+			err := cursor.CloseWithContext(closeCtx)
 			if err != nil {
 				log.Println("cursor close err:", err)
 			}
@@ -151,9 +151,9 @@ func (notifier *notifier) run(ctx context.Context) {
 	}, syncrun.RandRestart(time.Second, 3 * time.Second))(ctx)
 }
 
-func (notifier *notifier) Close(ctx context.Context) error {
+func (notifier *notifier) CloseWithContext(ctx context.Context) error {
 	notifier.pb.Stop()
-	err := notifier.wd.Close(ctx)
+	err := notifier.wd.CloseWithContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ type Notification struct {
 
 type OutputCursor interface {
 	Next(ctx context.Context) *Notification
-	Close(ctx context.Context) error
+	CloseWithContext(ctx context.Context) error
 	Err() error
 }
 

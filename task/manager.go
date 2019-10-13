@@ -34,7 +34,7 @@ type Scheduler interface {
 	WaitTaskAwaken(ctx context.Context) (awaken Awaken, err error)
 	ReadTask(ctx context.Context, taskKey string) (*Task, error)
 	NewStageID(ctx context.Context, taskKey string) (stageID int64, err error)
-	Close(ctx context.Context) error
+	CloseWithContext(ctx context.Context) error
 }
 
 type Context struct {
@@ -375,7 +375,7 @@ func (svc *Manager) runScheduler(ctx context.Context) error {
 	return svc.runScheduler(ctx)
 }*/
 
-func (svc *Manager) Close(ctx context.Context) error {
+func (svc *Manager) CloseWithContext(ctx context.Context) error {
 	syncrun.RunAsGroup(ctx, func(ctx context.Context) {
 		svc.pb.Stop()
 		select {
@@ -383,7 +383,7 @@ func (svc *Manager) Close(ctx context.Context) error {
 		case <- svc.pb.Stopped():
 		}
 	}, func(ctx context.Context) {
-		svc.scheduler.Close(ctx)
+		svc.scheduler.CloseWithContext(ctx)
 	})
 	return nil
 }

@@ -29,7 +29,7 @@ func (srv *Server) Start() {
 	srv.pb.Start()
 }
 
-func (srv *Server) Close(ctx context.Context) error {
+func (srv *Server) CloseWithContext(ctx context.Context) error {
 	srv.pb.Stop()
 	select {
 	case <- srv.pb.Stopped():

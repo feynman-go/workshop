@@ -10,7 +10,7 @@ func TestNotifySend(t *testing.T) {
 	stream := NewMemoMessageStream()
 	iterator := NewIterator(stream, Option{})
 	defer func() {
-		iterator.Close(context.Background())
+		iterator.CloseWithContext(context.Background())
 	}()
 
 	stream.Push(Notification{})
@@ -30,7 +30,7 @@ func TestNotifySendMulti(t *testing.T) {
 	stream := NewMemoMessageStream()
 	iterator := NewIterator(stream, Option{})
 	defer func() {
-		iterator.Close(context.Background())
+		iterator.CloseWithContext(context.Background())
 	}()
 
 	var err error
@@ -61,7 +61,7 @@ func TestNotifyOneByOne(t *testing.T) {
 	stream := NewMemoMessageStream()
 	iterator := NewIterator(stream, Option{})
 	defer func() {
-		iterator.Close(context.Background())
+		iterator.CloseWithContext(context.Background())
 	}()
 
 	var err error

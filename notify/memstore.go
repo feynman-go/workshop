@@ -60,7 +60,7 @@ func (cursor *MemoCursor) Next(ctx context.Context) *Notification {
 	return nil
 }
 
-func (cursor *MemoCursor) Close(ctx context.Context) error {
+func (cursor *MemoCursor) CloseWithContext(ctx context.Context) error {
 	cursor.rw.Lock()
 	defer cursor.rw.Unlock()
 	select {

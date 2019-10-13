@@ -34,7 +34,7 @@ func (tracer *Tracer) Start() {
 	tracer.pb.Start()
 }
 
-func (tracer *Tracer) Close(ctx context.Context) error {
+func (tracer *Tracer) CloseWithContext(ctx context.Context) error {
 	return tracer.pb.StopAndWait(ctx)
 }
 
