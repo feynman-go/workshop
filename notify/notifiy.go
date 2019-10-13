@@ -16,9 +16,11 @@ import (
 	Publish(ctx context.Context, notifications []Notification) (err error)
 }*/
 
+// not multi goroutine safe
 type Iterator struct {
 	b []Notification
 	notifier *notifier
+	err error
 }
 
 // init iterator is empty
@@ -34,20 +36,23 @@ func (iterator *Iterator) Batch() []Notification {
 	return iterator.b
 }
 
-func (iterator *Iterator) CommitAndWaitNext(ctx context.Context) (*Iterator, error) {
+func (iterator *Iterator) Next(ctx context.Context) bool {
 	err := iterator.notifier.commit(ctx, iterator.b)
 	if err != nil {
-		return nil, err
+		iterator.err = err
+		return false
 	}
 	select {
 	case ns := <- iterator.notifier.cn:
-		return &Iterator{
-			b:        ns,
-			notifier: iterator.notifier,
-		}, nil
+		iterator.b = ns
+		return true
 	case <- ctx.Done():
-		return nil, ctx.Err()
+		return false
 	}
+}
+
+func (iterator *Iterator) Err() error {
+	return iterator.err
 }
 
 func (iterator *Iterator) CloseWithContext(ctx context.Context) error {
