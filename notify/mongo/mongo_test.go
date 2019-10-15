@@ -3,7 +3,7 @@ package mongo
 import (
 	"context"
 	"github.com/feynman-go/workshop/database/mgo"
-	"github.com/feynman-go/workshop/message"
+	"github.com/feynman-go/workshop/notify"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -41,7 +41,7 @@ func TestBasicStream(t *testing.T) {
 
 	dbClt := mgo.New(agent, mgo.Option{})
 
-	defer dbClt.Close(context.Background())
+	defer dbClt.CloseWithContext(context.Background())
 
 	err = dbClt.Do(context.Background(), func(ctx context.Context, db *mongo.Database) error {
 		return db.Drop(ctx)
@@ -52,41 +52,40 @@ func TestBasicStream(t *testing.T) {
 	}
 
 	type Doc struct {
-		Message []string `bson:"message"`
+		Message string `bson:"message"`
 	}
 
 	ms := NewMessageStream(dbClt, "messages", &MockResumStore{}, Query{
 		Fields: map[string]interface {}{
 			"message": bson.M{"$exists": true},
 		},
-	}, func(ctx context.Context, d bson.Raw) ([]*message.OutputMessage, error) {
+	}, func(ctx context.Context, d bson.Raw) (NotifyInfo, error) {
 		var doc Doc
 		err := bson.Unmarshal(d, &doc)
 		if err != nil {
-			return nil, err
+			return NotifyInfo{}, err
 		}
-		var ret []*message.OutputMessage
-
-		for _, m := range doc.Message {
-			ret = append(ret, &message.OutputMessage{
-				Topic: "test",
-				Message: message.Message{
-					UID: m,
-				},
-			})
-		}
-		return ret, nil
+		return NotifyInfo{
+			CreateTime: time.Now(),
+			Payload: doc,
+		}, nil
 	})
 
-	cur, err := FetchOutputCursor(context.Background())
+	cur, err := ms.FetchOutputCursor(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	err = dbClt.Do(context.Background(), func(ctx context.Context, db *mongo.Database) error {
-		_, err := db.Collection("messages").InsertOne(ctx, Doc{
-			 Message: []string{"a", "b", "c"},
-		})
+		_, err := db.Collection("messages").InsertMany(ctx, []interface{}{
+			Doc {
+				Message: "a",
+			}, Doc{
+				Message: "b",
+			}, Doc{
+				Message: "c",
+			}},
+		)
 		return err
 	})
 
@@ -94,7 +93,7 @@ func TestBasicStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var msg *message.OutputMessage
+	var msg *notify.Notification
 
 	if !checkInDuration(100 * time.Millisecond, 0, func() {
 		msg = cur.Next(context.Background())
@@ -102,7 +101,7 @@ func TestBasicStream(t *testing.T) {
 		log.Println("next cost too much time")
 	}
 
-	if msg.UID != "a" {
+	if msg.Data.(Doc).Message != "a" {
 		t.Fatal("first message uid should be a")
 	}
 
@@ -112,7 +111,7 @@ func TestBasicStream(t *testing.T) {
 		log.Println("next cost too much time")
 	}
 
-	if msg.UID != "b" {
+	if msg.Data.(Doc).Message != "b" {
 		t.Fatal("first message uid should be a")
 	}
 
@@ -122,7 +121,7 @@ func TestBasicStream(t *testing.T) {
 		log.Println("next cost too much time")
 	}
 
-	if msg.UID != "c" {
+	if msg.Data.(Doc).Message != "c" {
 		t.Fatal("first message uid should be a")
 	}
 }

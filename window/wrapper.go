@@ -41,7 +41,7 @@ func (trigger *DurationTrigger) Accept(ctx context.Context, input interface{}) (
 			if t := trigger.trigger; t != nil && !t.Triggered(){
 				t.Trigger()
 			}
-			trigger.tm = nil
+			trigger.tm.Reset(trigger.duration)
 		})
 	}
 

@@ -152,6 +152,11 @@ func (notifier *notifier) run(ctx context.Context) {
 				break
 			}
 		}
+
+		if cursor.Err() != nil {
+			log.Println("notify get cursor err:", err)
+		}
+
 		return true
 	}, syncrun.RandRestart(time.Second, 3 * time.Second))(ctx)
 }

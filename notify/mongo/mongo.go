@@ -51,7 +51,12 @@ type ResumeStore interface {
 	GetResume(ctx context.Context) (resume Resume, err error)
 }
 
-type Parser func(ctx context.Context, raw bson.Raw) ([]*notify.Notification, error)
+type NotifyInfo struct {
+	CreateTime time.Time
+	Payload interface{}
+}
+
+type Parser func(ctx context.Context, raw bson.Raw) (*NotifyInfo, error)
 
 type MessageStream struct {
 	query bson.D
@@ -224,13 +229,23 @@ func(c *Cursor) Next(ctx context.Context) *notify.Notification {
 			continue
 		}
 
-		msgs, err := c.parser(ctx, doc.FullDoc)
+		info, err := c.parser(ctx, doc.FullDoc)
 		if err != nil {
 			c.setErr(err)
 			continue
 		}
 
-		c.msgs = msgs
+		if info != nil {
+			ntfs := []*notify.Notification{
+				{
+					CreateTime: info.CreateTime,
+					OffsetToken: c.curToken,
+					Data: info.Payload,
+				},
+			}
+
+			c.msgs = ntfs
+		}
 	}
 	return nil
 }

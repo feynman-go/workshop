@@ -3,6 +3,7 @@ package window
 import (
 	"context"
 	"github.com/pkg/errors"
+	"log"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,6 +85,70 @@ func TestWindowInputAndTrigger(t *testing.T) {
 
 	if triggered != 1 {
 		t.Fatal("bad triggered count", triggered)
+	}
+}
+
+func TestWindowWaitOk(t *testing.T) {
+	var triggered int32
+	var wb Whiteboard
+	wd := New(MockAggregator{
+		ResetFunc: func(whiteboard Whiteboard) {
+			wb = whiteboard
+			return
+		},
+		AcceptFunc: func(ctx context.Context, input interface{}) error {
+			wb.Trigger.Trigger()
+			return nil
+		},
+	}, MockAggregator{
+		MaterializeFunc: func(ctx context.Context) error {
+			if atomic.AddInt32(&triggered, 1) == 2 {
+				log.Println("23232323232323")
+				return errors.New("err")
+			}
+			return nil
+		},
+	})
+
+	ctx, _ := context.WithTimeout(context.Background(), time.Second)
+
+	err := wd.WaitUntilOk(ctx)
+	if err != nil {
+		t.Fatal("should return nil err but:", err)
+	}
+
+	err = wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(time.Millisecond * 100)
+
+	err = wd.WaitUntilOk(ctx)
+	if err != nil {
+		t.Fatal("should return nil err but:", err)
+	}
+
+	err = wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(time.Millisecond * 100)
+
+	err = wd.WaitUntilOk(ctx)
+	if err == nil {
+		t.Fatal("should return err")
+	}
+
+	t.Log(err.Error())
+
+	wb.Trigger.Trigger()
+	time.Sleep(100 * time.Millisecond)
+
+	err = wd.WaitUntilOk(context.Background())
+	if err != nil {
+		t.Fatal("should return nil err but:", err)
 	}
 }
 

@@ -87,3 +87,64 @@ func TestMutexHoldReleaseOnMultiRoutine(t *testing.T) {
 		t.Fatal("bad hold count", count)
 	}
 }
+
+func TestMutexHoldForReadAndRelease(t *testing.T) {
+	mx := &Mutex{}
+	if !mx.HoldForRead(context.Background()) {
+		t.Fatal("hold mutex err")
+	}
+
+	ctx, _ := context.WithTimeout(context.Background(), 100 * time.Millisecond)
+
+	if mx.Hold(ctx) {
+		t.Fatal("hold mutex should failed")
+	}
+
+	mx.ReleaseForRead()
+	if !mx.Hold(context.Background()) {
+		t.Fatal("hold mutex failed")
+	}
+}
+
+func TestMutexHoldForMultiReadAndRelease(t *testing.T) {
+	mx := &Mutex{}
+	if !mx.HoldForRead(context.Background()) {
+		t.Fatal("hold mutex err")
+	}
+
+	if !mx.HoldForRead(context.Background()) {
+		t.Fatal("hold mutex should failed")
+	}
+
+	if !mx.HoldForRead(context.Background()) {
+		t.Fatal("hold mutex should failed")
+	}
+
+	if mx.TryHold() {
+		t.Fatal("hold mutex failed")
+	}
+}
+
+func TestMutexHoldReadOnMultiRoutine(t *testing.T) {
+	mx := &Mutex{}
+	var count int32= 0
+	group := &sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		group.Add(1)
+		go func(i int) {
+			var startTime = time.Now()
+			if mx.HoldForRead(context.Background()) {
+				atomic.AddInt32(&count, 1)
+				mx.ReleaseForRead()
+			}
+			if time.Now().Sub(startTime) > 100 *time.Millisecond {
+				t.Fatal("hold/release cost too many time", i)
+			}
+			group.Done()
+		}(i)
+	}
+	group.Wait()
+	if count != 100 {
+		t.Fatal("bad hold count", count)
+	}
+}
