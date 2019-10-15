@@ -19,32 +19,40 @@ type DurationTrigger struct {
 
 func DurationWrapper(duration time.Duration) Wrapper {
 	return func(in Acceptor) Acceptor {
-		return &DurationTrigger {
+		trigger := &DurationTrigger {
 			duration: duration,
 			inner: in,
 		}
+		trigger.refreshTimer()
+		return trigger
 	}
+}
+
+func (trigger *DurationTrigger) refreshTimer() {
+	if trigger.tm != nil {
+		if !trigger.tm.Stop() {
+			select {
+			case <- trigger.tm.C:
+			default:
+			}
+		}
+	}
+
+	trigger.tm = time.AfterFunc(trigger.duration, func() {
+		trigger.rw.RLock()
+		defer trigger.rw.RUnlock()
+		if t := trigger.trigger; t != nil && !t.Triggered() {
+			t.Trigger()
+		}
+		trigger.tm.Reset(trigger.duration)
+	})
+	return
 }
 
 func (trigger *DurationTrigger) Accept(ctx context.Context, input interface{}) (err error) {
 	if trigger.inner != nil {
 		return trigger.inner.Accept(ctx, input)
 	}
-
-	trigger.rw.Lock()
-	defer trigger.rw.Unlock()
-
-	if trigger.tm == nil {
-		trigger.tm = time.AfterFunc(trigger.duration, func() {
-			trigger.rw.RLock()
-			defer trigger.rw.RUnlock()
-			if t := trigger.trigger; t != nil && !t.Triggered(){
-				t.Trigger()
-			}
-			trigger.tm.Reset(trigger.duration)
-		})
-	}
-
 	return nil
 }
 
@@ -56,17 +64,7 @@ func (trigger *DurationTrigger) Reset(whiteboard Whiteboard) {
 	trigger.rw.Lock()
 	defer trigger.rw.Unlock()
 
-	if trigger.tm != nil {
-		if !trigger.tm.Stop() {
-			select {
-			case <- trigger.tm.C:
-			default:
-			}
-		}
-		trigger.tm.Reset(trigger.duration)
-		trigger.trigger = nil
-	}
-
+	trigger.refreshTimer()
 	trigger.seq = whiteboard.Seq
 	trigger.trigger = whiteboard.Trigger
 	return

@@ -103,7 +103,6 @@ func TestWindowWaitOk(t *testing.T) {
 	}, MockAggregator{
 		MaterializeFunc: func(ctx context.Context) error {
 			if atomic.AddInt32(&triggered, 1) == 2 {
-				log.Println("23232323232323")
 				return errors.New("err")
 			}
 			return nil
@@ -305,5 +304,25 @@ func TestWindowInvokeZeroCount(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if triggered != 1 {
 		t.Fatal("bad triggered count", triggered)
+	}
+}
+
+func TestWindowTimeRepeated(t *testing.T) {
+	var triggered int32
+	wd := New(MockAggregator{},  MockAggregator{
+		MaterializeFunc: func(ctx context.Context) error {
+			atomic.AddInt32(&triggered, 1)
+			log.Println("materialize")
+			return errors.New("err atomic")
+		},
+	}, DurationWrapper(100 * time.Millisecond))
+	err := wd.Accept(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(time.Second)
+	if atomic.LoadInt32(&triggered) < 9 {
+		t.Fatal("bad triggered count")
 	}
 }
