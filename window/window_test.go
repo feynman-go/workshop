@@ -316,6 +316,13 @@ func TestWindowTimeRepeated(t *testing.T) {
 			return errors.New("err atomic")
 		},
 	}, DurationWrapper(100 * time.Millisecond))
+
+	time.Sleep(time.Second)
+
+	if atomic.LoadInt32(&triggered) != 0 {
+		t.Fatal("bad triggered count")
+	}
+
 	err := wd.Accept(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)

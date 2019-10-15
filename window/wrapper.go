@@ -23,7 +23,6 @@ func DurationWrapper(duration time.Duration) Wrapper {
 			duration: duration,
 			inner: in,
 		}
-		trigger.refreshTimer()
 		return trigger
 	}
 }
@@ -50,10 +49,16 @@ func (trigger *DurationTrigger) refreshTimer() {
 }
 
 func (trigger *DurationTrigger) Accept(ctx context.Context, input interface{}) (err error) {
-	if trigger.inner != nil {
-		return trigger.inner.Accept(ctx, input)
+	trigger.rw.Lock()
+	if trigger.tm == nil {
+		trigger.refreshTimer()
 	}
-	return nil
+	trigger.rw.Unlock()
+
+	if trigger.inner != nil {
+		err = trigger.inner.Accept(ctx, input)
+	}
+	return err
 }
 
 func (trigger *DurationTrigger) Reset(whiteboard Whiteboard) {
@@ -64,7 +69,10 @@ func (trigger *DurationTrigger) Reset(whiteboard Whiteboard) {
 	trigger.rw.Lock()
 	defer trigger.rw.Unlock()
 
-	trigger.refreshTimer()
+	if trigger.tm != nil {
+		trigger.tm.Stop()
+		trigger.tm = nil
+	}
 	trigger.seq = whiteboard.Seq
 	trigger.trigger = whiteboard.Trigger
 	return
