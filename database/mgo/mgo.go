@@ -8,8 +8,6 @@ import (
 	"github.com/feynman-go/workshop/record"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readconcern"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	"golang.org/x/time/rate"
 	"runtime"
 	"time"
@@ -185,10 +183,7 @@ func NewMajorAgent(option MajorOption) (DbAgent, error) {
 		return nil, err
 	}
 
-	dbOpt := options.Database().
-		SetWriteConcern(writeconcern.New(writeconcern.WMajority(), writeconcern.J(true))).
-		SetReadConcern(readconcern.Majority())
-
+	dbOpt := options.Database()
 	return &majorAgent{
 		db: clt.Database(option.Database, dbOpt),
 	}, nil
