@@ -44,7 +44,8 @@ func (pool *Pool) MaxLocalID() int {
 	return pool.max
 }
 
-func (pool *Pool) Feed(ctx context.Context, box TaskBox) error {
+func (pool *Pool) Feed(box TaskBox) error {
+	ctx := box.ctx
 	if box.stubborn {
 		if !pool.tryFeedBlock(ctx, box, box.localId) {
 			return errors.New("stubborn " +
@@ -187,7 +188,7 @@ func (w *worker) run() (err error) {
 }
 
 type TaskBox struct {
-	closed   <-chan struct{}
+	ctx      context.Context
 	f        TaskFunc
 	stubborn bool
 	localId  int

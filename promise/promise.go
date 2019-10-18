@@ -11,14 +11,22 @@ type Request struct {
 	partition bool
 	eventKey  int
 	head      textproto.MIMEHeader
+	ctx context.Context
 }
 
-func (r Request) WithHead(key, value string) Request {
+/*func (r Request) WithHead(key, value string) Request {
 	if r.head == nil {
 		r.head = textproto.MIMEHeader{}
 	}
 	r.head.Set(key, value)
 	return r
+}*/
+
+func (r Request) Context() context.Context {
+	if r.ctx == nil {
+		return context.Background()
+	}
+	return r.ctx
 }
 
 func (r Request) PromiseKey() int {
@@ -90,7 +98,7 @@ type Result struct {
 	Payload interface{}
 }
 
-type ProcessFunc func(ctx context.Context, req Request) Result
+type ProcessFunc func(req Request) Result
 
 type Promise struct {
 	success   *Promise
@@ -223,7 +231,7 @@ func (p *Promise) setNext(ps ProcessFunc, middles []Middle, success bool) *Promi
 
 func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 	task := TaskBox{
-		closed: p.closeChan,
+		ctx: req.ctx,
 		f:      taskFunc,
 	}
 
@@ -235,7 +243,7 @@ func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 	return task
 }
 
-func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error {
+func (p *Promise) post(lastProcess *processInstance) error {
 	req := Request{
 		from: lastProcess,
 	}
@@ -264,8 +272,8 @@ func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error 
 			err = profile.Wait(ctx, req)
 		}
 		if err == nil {
-			err = p.pool.Feed(ctx, p.newTaskBox(req, func(ctx context.Context, localId int) {
-				p.doProcess(ctx, profile)
+			err = p.pool.Feed(p.newTaskBox(req, func(ctx context.Context, localId int) {
+				p.doProcess(profile)
 			}))
 		}
 		cancel()
@@ -276,7 +284,7 @@ func (p *Promise) post(ctx context.Context, lastProcess *processInstance) error 
 	return nil
 }
 
-func (p *Promise) doProcess(ctx context.Context, profile Profile) {
+func (p *Promise) doProcess(profile Profile) {
 	req := *profile.req
 	instance := &processInstance{
 		Req: req,
@@ -284,14 +292,14 @@ func (p *Promise) doProcess(ctx context.Context, profile Profile) {
 
 	var err = profile.req.LastErr()
 	if p := profile.Process; p != nil {
-		result := p(ctx, req)
+		result := p(req)
 		instance.Result = &result
 		err = instance.Result.Err
 	}
 
 	if err != nil {
 		if exception := p.exception; exception != nil {
-			err = exception.post(ctx, instance)
+			err = exception.post(instance)
 			if err != nil {
 				p.chanStatus.close(err, instance)
 			}
@@ -305,7 +313,7 @@ func (p *Promise) doProcess(ctx context.Context, profile Profile) {
 		p.close(err, instance)
 		return
 	}
-	err = next.post(ctx, instance)
+	err = next.post(instance)
 	if err != nil {
 		p.chanStatus.close(err, instance)
 	}
@@ -381,7 +389,7 @@ func (s *chanStatus) tryStart(ctx context.Context) bool {
 		return false
 	}
 	s.started = true
-	err := s.root.post(ctx, nil)
+	err := s.root.post(nil)
 	s.mu.Unlock()
 	if err != nil {
 		s.close(err, nil)
