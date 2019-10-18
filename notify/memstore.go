@@ -101,7 +101,7 @@ func NewMemoMessageStream() *MemoMessageStream {
 	return stream
 }
 
-func (stream *MemoMessageStream) Push(notification Notification) uint64 {
+func (stream *MemoMessageStream) Push(data interface{}) uint64 {
 	stream.rw.Lock()
 
 	var idx uint64
@@ -115,6 +115,8 @@ func (stream *MemoMessageStream) Push(notification Notification) uint64 {
 
 	output := &Notification{
 		OffsetToken: stream.formatIndex(idx),
+		Data: data,
+		CreateTime: time.Now(),
 	}
 
 	stream.ll.Insert(msgContainer{

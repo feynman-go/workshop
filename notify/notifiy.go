@@ -1,132 +1,83 @@
 package notify
 
 import (
+	"container/list"
 	"context"
-	"fmt"
 	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
-	"github.com/feynman-go/workshop/window"
 	"github.com/pkg/errors"
 	"log"
 	"sync"
 	"time"
 )
 
+const (
+	DefaultMaxQueueCount = 100
+)
 /*type Publisher interface {
 	Publish(ctx context.Context, notifications []Notification) (err error)
 }*/
 
 // not multi goroutine safe
 type Iterator struct {
-	b []Notification
-	notifier *notifier
-	err error
+	pb        *prob.Prob
+	stream    OutputStream
+	option    Option
+	queue 	*Queue
+}
+
+type Option struct {
+	MaxQueueCount int
+	StreamMiddles []OutputStreamMiddle
+	CloseTimeOut  time.Duration
 }
 
 // init iterator is empty
 func NewIterator(stream OutputStream, option Option) *Iterator {
-	nf := newNotifier(stream, option)
-	return &Iterator{
-		b: nil,
-		notifier: nf,
+	if option.MaxQueueCount == 0 {
+		option.MaxQueueCount = DefaultMaxQueueCount
 	}
-}
-
-func (iterator *Iterator) Batch() []Notification {
-	return iterator.b
-}
-
-func (iterator *Iterator) Next(ctx context.Context) bool {
-	err := iterator.notifier.commit(ctx, iterator.b)
-	if err != nil {
-		iterator.err = err
-		return false
-	}
-	select {
-	case ns := <- iterator.notifier.cn:
-		iterator.b = ns
-		return true
-	case <- ctx.Done():
-		return false
-	}
-}
-
-func (iterator *Iterator) Err() error {
-	return iterator.err
-}
-
-func (iterator *Iterator) CloseWithContext(ctx context.Context) error {
-	return iterator.notifier.CloseWithContext(ctx)
-}
-
-type notifier struct {
-	pb        *prob.Prob
-	stream    OutputStream
-	option    Option
-	cn chan []Notification
-	wd 		*window.Window
-}
-
-type Option struct {
-	MaxBlockCount    int64
-	MaxBlockDuration time.Duration
-	FailedWait       time.Duration
-	StreamMiddles    []OutputStreamMiddle
-	CloseTimeOut     time.Duration
-}
-
-func newNotifier(stream OutputStream, option Option) *notifier {
 	for _, mid := range option.StreamMiddles {
 		stream = mid.WrapStream(stream)
 	}
-	ret := &notifier{
+	ret := &Iterator{
 		stream:    stream,
-		cn: make(chan []Notification, 6),
+		queue: NewQueue(option.MaxQueueCount),
 	}
 	ret.pb = prob.New(ret.run)
-	var wrappers []window.Wrapper
-	if option.MaxBlockCount <= 0 {
-		option.MaxBlockCount = 1
-	}
-	if option.MaxBlockDuration <= 0 {
-		option.MaxBlockDuration = time.Second
-	}
-
-	wrappers = append(wrappers, window.CounterWrapper(uint64(option.MaxBlockCount)))
-	if option.MaxBlockDuration > 0 {
-		wrappers = append(wrappers, window.DurationWrapper(option.MaxBlockDuration))
-	}
-
-	ret.wd = ret.newPublishWindow(wrappers)
 	ret.pb.Start()
 	return ret
 }
 
-func (notifier *notifier) start() {
-	notifier.pb.Start()
+func (iterator *Iterator) Peek(ctx context.Context) (*Notification, error) {
+	return iterator.queue.Peek(ctx)
 }
 
-func (notifier *notifier) commit(ctx context.Context, batch []Notification) error {
-	return notifier.stream.CommitOutput(ctx, batch)
+func (iterator *Iterator) ResetPeeked() {
+	iterator.queue.ResetPeeked()
 }
 
-func (notifier *notifier) newPublishWindow(wrappers []window.Wrapper) *window.Window {
-	ret := &publishWindow{
-		batchChan: notifier.cn,
-	}
-	wd := window.New(ret, ret, wrappers...)
-	return wd
+func (iterator *Iterator) PullPeeked(ctx context.Context) error {
+	return iterator.queue.PullPeeked(ctx)
 }
 
-func (notifier *notifier) run(ctx context.Context) {
+func (iterator *Iterator) start() {
+	iterator.pb.Start()
+}
+
+func (iterator *Iterator) commit(ctx context.Context, batch []Notification) error {
+	return iterator.stream.CommitOutput(ctx, batch)
+}
+
+func (iterator *Iterator) run(ctx context.Context) {
 	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
-		err := notifier.wd.WaitUntilOk(ctx)
+		err := iterator.queue.WaitOk(ctx)
 		if err != nil {
 			log.Println("wait window ok err:", err)
 			return true
 		}
 
-		stream := notifier.stream
+		stream := iterator.stream
 		cursor, err := stream.FetchOutputCursor(ctx)
 		if err != nil {
 			log.Println("fetch output cursor")
@@ -135,8 +86,8 @@ func (notifier *notifier) run(ctx context.Context) {
 
 		defer func() {
 			closeCtx := context.Background()
-			if notifier.option.CloseTimeOut != 0 {
-				closeCtx, _ = context.WithTimeout(closeCtx, notifier.option.CloseTimeOut)
+			if iterator.option.CloseTimeOut != 0 {
+				closeCtx, _ = context.WithTimeout(closeCtx, iterator.option.CloseTimeOut)
 			}
 			err := cursor.CloseWithContext(closeCtx)
 			if err != nil {
@@ -146,7 +97,7 @@ func (notifier *notifier) run(ctx context.Context) {
 
 
 		for msg := cursor.Next(ctx); msg != nil; msg = cursor.Next(ctx) {
-			err = notifier.wd.Accept(ctx, *msg)
+			err = iterator.queue.Push(ctx, *msg)
 			if err != nil {
 				log.Println("push message err:", err)
 				break
@@ -161,21 +112,19 @@ func (notifier *notifier) run(ctx context.Context) {
 	}, syncrun.RandRestart(time.Second, 3 * time.Second))(ctx)
 }
 
-func (notifier *notifier) CloseWithContext(ctx context.Context) error {
-	notifier.pb.Stop()
-	err := notifier.wd.CloseWithContext(ctx)
+func (iterator *Iterator) CloseWithContext(ctx context.Context) error {
+	iterator.pb.Stop()
+	err := iterator.queue.CloseWithContext(ctx)
 	if err != nil {
 		return err
 	}
-
 	select {
-	case <- notifier.pb.Stopped():
+	case <- iterator.pb.Stopped():
 	case <- ctx.Done():
 		return ctx.Err()
 	}
 	return nil
 }
-
 
 type Notification struct {
 	CreateTime time.Time
@@ -194,50 +143,171 @@ type OutputStream interface {
 	CommitOutput(ctx context.Context, notifications []Notification) error
 }
 
-type publishWindow struct {
-	rw        sync.RWMutex
-	msgs      []Notification
-	whiteboard window.Whiteboard
-	batchChan chan []Notification
+type OutputStreamMiddle interface {
+	WrapStream(stream OutputStream) OutputStream
 }
 
-func (agg *publishWindow) Reset(whiteboard window.Whiteboard) {
-	agg.whiteboard = whiteboard
+type Queue struct {
+	mx sync.RWMutex
+	closed bool
+	l *list.List
+	peeked *list.Element
+	queueFull chan struct{}
+	addNotify chan struct{}
+	max int
 }
 
-// imply interface for window
-func (agg *publishWindow) Accept(ctx context.Context, input interface{}) (err error) {
-	agg.rw.Lock()
-	defer agg.rw.Unlock()
+func NewQueue(max int) *Queue {
+	return &Queue{
+		addNotify: make(chan struct{}, 1),
+		l: list.New(),
+		max: max,
+	}
+}
 
-	msg, ok := input.(Notification)
-	if !ok {
-		log.Println("input is not message")
-		return errors.New("input must be message")
+func (queue *Queue) Push(ctx context.Context, notification Notification) error {
+	for ctx.Err() == nil {
+		queue.mx.Lock()
+		closed := queue.closed
+		queueFull := queue.queueFull
+		if closed {
+			queue.mx.Unlock()
+			return errors.New("closed")
+		}
+		if queueFull == nil {
+			queue.l.PushFront(notification)
+			select {
+			case queue.addNotify <- struct{}{}:
+			default:
+			}
+			queue.mx.Unlock()
+			return nil
+		}
+		queue.mx.Unlock()
+
+		select {
+		case <- queueFull:
+		case <- ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return ctx.Err()
+}
+
+func (queue *Queue) WaitOk(ctx context.Context) error {
+	queue.mx.RLock()
+	defer queue.mx.RUnlock()
+	cn := queue.queueFull
+	if cn == nil {
+		return ctx.Err()
+	}
+	select {
+	case <- ctx.Done():
+		return ctx.Err()
+	case <- cn:
+		return nil
+	}
+}
+
+func (queue *Queue) Peek(ctx context.Context) (*Notification, error) {
+	for ctx.Err() == nil {
+		nf, err := queue.tryPeek(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if nf != nil {
+			return nf, nil
+		}
+	}
+	return nil, nil
+}
+
+func (queue *Queue) tryPeek(ctx context.Context) (*Notification, error) {
+	queue.mx.Lock()
+	defer  queue.mx.Unlock()
+
+	closed := queue.closed
+	peeked := queue.peeked
+	if closed {
+		return nil, errors.New("closed")
 	}
 
-	agg.msgs = append(agg.msgs, msg)
-	return nil
+	var ret *list.Element
+	if peeked == nil {
+		ret = queue.l.Back()
+	} else {
+		ret = peeked.Prev()
+	}
+	if ret != nil {
+		queue.peeked = ret
+	}
+
+	if ret == nil {
+		select {
+		case <- queue.addNotify:
+		case <- ctx.Done():
+		}
+		return nil, nil
+	} else {
+		nf := ret.Value.(Notification)
+		return &nf, nil
+	}
 }
 
-// imply interface for window
-func (agg *publishWindow) Materialize(ctx context.Context) error {
-	agg.rw.Lock()
-	defer agg.rw.Unlock()
+func (queue *Queue) PullPeeked(ctx context.Context) error {
+	queue.mx.Lock()
+	defer  queue.mx.Unlock()
 
-	if len(agg.msgs) != 0 {
-		select {
-		case agg.batchChan <- agg.msgs:
-			agg.msgs = nil
-		default:
-			return fmt.Errorf("publisher push message block")
-		}
+	if queue.closed {
 		return nil
 	}
 
+	queueFull := queue.queueFull
+	if queue.peeked == nil {
+		return nil
+	}
+	for back := queue.l.Back(); back != nil ; back = queue.l.Back(){
+		queue.l.Remove(back)
+		if back == queue.peeked {
+			break
+		}
+	}
+	if queue.isQueueFull() {
+		if queueFull == nil {
+			queue.queueFull = make(chan struct{})
+		}
+	} else {
+		if queueFull != nil {
+			close(queueFull)
+			queue.queueFull = nil
+		}
+	}
 	return nil
 }
 
-type OutputStreamMiddle interface {
-	WrapStream(stream OutputStream) OutputStream
+func (queue *Queue) ResetPeeked() {
+	queue.mx.Lock()
+	defer  queue.mx.Unlock()
+	queue.peeked = nil
+}
+
+func (queue *Queue) CloseWithContext(ctx context.Context) error {
+	queue.mx.Lock()
+	defer queue.mx.Unlock()
+	if !queue.closed {
+		queue.closed = true
+	}
+	return nil
+}
+
+func (queue *Queue) LastPeeked() *Notification {
+	nf := queue.peeked.Value.(Notification)
+	return &nf
+}
+
+func (queue *Queue) isQueueFull() bool {
+	if queue.l.Len()  >= queue.max {
+		return true
+	}
+	return false
 }

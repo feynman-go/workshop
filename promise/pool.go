@@ -29,7 +29,7 @@ func NewPool(maxConcurrent int) *Pool {
 		closed:  closed,
 		p: &sync.Pool{
 			New: func() interface{} {
-				return &worker{
+				return &worker {
 					closed: closed,
 					c:      make(chan TaskBox),
 				}
