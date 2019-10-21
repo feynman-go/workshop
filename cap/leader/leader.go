@@ -262,6 +262,15 @@ func (mb *Member) Start() bool {
 	}
 }
 
+func (mb *Member) StartElector(ctx context.Context) {
+
+}
+
+func (mb *Member) DelayLeader(ctx context.Context) {
+
+}
+
+
 func (mb *Member) CloseWithContext(ctx context.Context) error {
 	mb.rw.Lock()
 	defer mb.rw.Unlock()

@@ -2,6 +2,7 @@ package leader
 
 import (
 	"context"
+	"github.com/feynman-go/workshop/cap/balance"
 	"github.com/feynman-go/workshop/syncrun"
 	"sync"
 	"time"
@@ -85,4 +86,27 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	}
 	pl.rw.RUnlock()
 	syncrun.RunAsGroup(ctx, rs...)
+}
+
+type BalanceLeaders struct {
+	scheduler balance.MemberScheduler
+	leaders *Leaders
+}
+
+func NewBalanceLeaders(scheduler balance.MemberScheduler, leaders *Leaders) *BalanceLeaders {
+
+}
+
+func (bls *BalanceLeaders) GetLeaders() *Leaders {
+	return bls.leaders
+}
+
+func (bls *BalanceLeaders) run(ctx context.Context) {
+	for ctx.Err() == nil {
+		schedules, err := bls.scheduler.WaitMemberSchedules(ctx)
+		if err != nil {
+			continue
+		}
+
+	}
 }

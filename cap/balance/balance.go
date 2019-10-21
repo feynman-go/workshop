@@ -24,12 +24,12 @@ func New(schedule Scheduler, instances []*Instance) *Balancer {
 	return ret
 }
 
-func (b *Balancer) Pick(partition int64) *Instance {
+func (b *Balancer) Pick(key interface{}) *Instance {
 	b.rw.RLock()
 	defer b.rw.RUnlock()
 	l := len(b.instance)
 
-	i := b.schedule.Pick(partition, l)
+	i := b.schedule.Pick(key, l)
 	if i < 0 || i >= l {
 		return nil
 	}
@@ -113,7 +113,7 @@ func (ins *Instance) updateRef(index int, b *Balancer) {
 
 type Scheduler interface {
 	// return < 0 means no instance available
-	Pick(partition int64, total int) int
+	Pick(key interface{}, total int) int
 	UpdateStatus(index int, score int32)
 }
 
