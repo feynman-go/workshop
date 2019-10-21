@@ -1,23 +1,23 @@
-package record
+package easyrecord
 
 import (
 	"context"
+	"github.com/feynman-go/workshop/record"
 	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/uber/jaeger-client-go"
 	"go.uber.org/zap"
 	"strconv"
 	"time"
-	tracerLog "github.com/opentracing/opentracing-go/log"
 )
 
-func EasyRecorders(desc string, factory ...Factory) Factory {
-	fs := chainFactory{}
-	fs = append(fs, NewLoggerRecorderFactory(zap.L(), false, desc))
+func EasyRecorders(desc string, factory ...record.Factory) record.Factory {
+	fs := []record.Factory{}
+	fs = append(fs, NewTracerFactory(nil))
+	fs = append(fs, NewLoggerRecorderFactory(nil, desc))
 	fs = append(fs, NewPromRecorderFactory(desc))
-	fs = append(fs, NewTracerFactory(opentracing.GlobalTracer()))
-
 	fs = append(fs, factory...)
-	return fs
+	return record.ChainFactory(fs...)
 }
 
 type PromFactory struct {
@@ -44,7 +44,7 @@ func NewPromRecorderFactory(name string, fields ...string) *PromFactory {
 	}
 }
 
-func (factory *PromFactory) ActionRecorder(ctx context.Context, name string, fields ...Field) (Recorder, context.Context) {
+func (factory *PromFactory) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
 	if factory.hv == nil {
 		return skipRecorder{}, ctx
 	}
@@ -56,7 +56,7 @@ func (factory *PromFactory) ActionRecorder(ctx context.Context, name string, fie
 	}, ctx
 }
 
-func (factory *PromFactory) buildLabel(name string, err error, fields []Field) prometheus.Labels {
+func (factory *PromFactory) buildLabel(name string, err error, fields []record.Field) prometheus.Labels {
 	lbs := prometheus.Labels{
 		"err": strconv.FormatBool(err != nil),
 		"name": name,
@@ -74,17 +74,16 @@ func (factory *PromFactory) commit(startTime time.Time, labels prometheus.Labels
 }
 
 type PromRecorder struct {
-	fields []Field
+	fields []record.Field
 	factory *PromFactory
 	startTime time.Time
 	name string
 }
 
-func (recorder PromRecorder) Commit(err error, fields ...Field) {
+func (recorder PromRecorder) Commit(err error, fields ...record.Field) {
 	labels := recorder.factory.buildLabel(recorder.name, err, append(recorder.fields, fields...))
 	recorder.factory.commit(recorder.startTime, labels)
 }
-
 
 type LoggerFactory struct {
 	logger *zap.Logger
@@ -92,16 +91,25 @@ type LoggerFactory struct {
 	desc string
 }
 
-func NewLoggerRecorderFactory(logger *zap.Logger, recordNoErr bool, messageDesc string) *LoggerFactory {
+func NewLoggerRecorderFactory(logger *zap.Logger, messageDesc string) *LoggerFactory {
 	return &LoggerFactory {
 		logger: logger,
-		recordNoErr: recordNoErr,
 		desc: messageDesc,
 	}
 }
 
-func (factory *LoggerFactory) ActionRecorder(ctx context.Context, name string, fields ...Field) (Recorder, context.Context) {
-	if factory.logger == nil {
+func (factory *LoggerFactory) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
+	span := opentracing.SpanFromContext(ctx)
+	if span != nil {
+		spanCtx, _ := span.Context().(jaeger.SpanContext)
+		if spanCtx.IsValid() {
+			fields = append(fields,
+				record.StringField("trace_id", spanCtx.TraceID().String()),
+				record.StringField("span_id", spanCtx.SpanID().String()),
+			)
+		}
+	}
+	if factory.logger == nil && zap.L() == nil {
 		return skipRecorder{}, ctx
 	}
 	return LoggerRecorder{
@@ -112,11 +120,12 @@ func (factory *LoggerFactory) ActionRecorder(ctx context.Context, name string, f
 	}, ctx
 }
 
-func (factory *LoggerFactory) commit(name string, startTime time.Time, err error, fields []Field) {
+func (factory *LoggerFactory) commit(name string, startTime time.Time, err error, fields []record.Field) {
 	logger := factory.logger
 	if logger == nil {
 		logger = zap.L()
 	}
+
 	if logger == nil {
 		return
 	}
@@ -126,7 +135,7 @@ func (factory *LoggerFactory) commit(name string, startTime time.Time, err error
 		fs = make([]zap.Field,0, len(fields) + 4)
 		fs = append(fs, zap.Error(err))
 	} else {
-		fs = make([]zap.Field,0, len(fields) + 3)
+		fs = make([]zap.Field, 0, len(fields) + 3)
 	}
 
 	fs = append(fs, zap.String("name", name))
@@ -136,26 +145,23 @@ func (factory *LoggerFactory) commit(name string, startTime time.Time, err error
 	for _, f := range fields {
 		fs = append(fs, zap.String(f.Name, f.StringValue()))
 	}
-	if err == nil && !factory.recordNoErr {
-		return
-	}
 
 	if err == nil {
-		factory.logger.Info(factory.desc, fs...)
+		logger.Info(factory.desc, fs...)
 	} else {
-		factory.logger.Error(factory.desc, fs...)
+		logger.Error(factory.desc, fs...)
 	}
 }
 
 type LoggerRecorder struct {
-	fields []Field
+	fields []record.Field
 	factory *LoggerFactory
 	startTime time.Time
 	name string
 }
 
-func (recorder LoggerRecorder) Commit(err error, fields ...Field) {
-	recorder.factory.commit(recorder.name, recorder.startTime, err, fields)
+func (recorder LoggerRecorder) Commit(err error, fields ...record.Field) {
+	recorder.factory.commit(recorder.name, recorder.startTime, err, append(recorder.fields, fields...))
 }
 
 type TracerFactory struct {
@@ -168,7 +174,7 @@ func NewTracerFactory(tracer opentracing.Tracer) *TracerFactory  {
 	}
 }
 
-func (factory *TracerFactory) ActionRecorder(ctx context.Context, name string, fields ...Field) (Recorder, context.Context) {
+func (factory *TracerFactory) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
 	tracer := factory.tracer
 	if tracer == nil {
 		tracer = opentracing.GlobalTracer()
@@ -178,50 +184,31 @@ func (factory *TracerFactory) ActionRecorder(ctx context.Context, name string, f
 		return skipRecorder{}, ctx
 	}
 
-	opt := tracerOption{
-		startTime: time.Now(),
-		fields: fields,
-	}
-
-	span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, tracer, name, opt)
+	span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, tracer, name)
 	return &TracerRecorder {
+		fields: fields,
 		span: span,
 	}, ctx
 }
 
 
 type TracerRecorder struct {
+	fields []record.Field
 	span opentracing.Span
 }
 
-func (recorder TracerRecorder) Commit(err error, fields ...Field) {
-	if err != nil {
-		recorder.span.SetTag("err", true)
-		recorder.span.LogFields(tracerLog.Error(err))
+func (recorder TracerRecorder) Commit(err error, fields ...record.Field) {
+	for _, f := range recorder.fields {
+		recorder.span.SetTag(f.Name, f.Value())
 	}
 	for _, f := range fields {
 		recorder.span.SetTag(f.Name, f.Value())
 	}
+	if err != nil {
+		recorder.span.SetTag("err", err.Error())
+	}
 	recorder.span.Finish()
 }
 
-type tracerOption struct {
-	startTime time.Time
-	fields []Field
-}
-
-func (opt tracerOption) Apply(options *opentracing.StartSpanOptions) {
-	if opt.startTime.IsZero() {
-		opt.startTime = time.Now()
-	}
-	options.StartTime = opt.startTime
-	if options.Tags == nil {
-		options.Tags = map[string]interface{}{}
-	}
-	for _, f := range opt.fields {
-		options.Tags[f.Name] = f.Value()
-	}
-}
-
 type skipRecorder struct {}
-func (recorder skipRecorder) Commit(err error, fields ...Field) {}
+func (recorder skipRecorder) Commit(err error, fields ...record.Field) {}
