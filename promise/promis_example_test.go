@@ -9,7 +9,7 @@ import (
 
 func ExamplePromise() {
 	pool := NewPool(3)
-	pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
+	pms := NewPromise(context.Background(), pool, func(req Request) Result {
 		// .... Do task
 		return Result{
 			Err:     nil,
@@ -29,11 +29,11 @@ func ExamplePromise() {
 
 func ExamplePromiseChain() {
 	pool := NewPool(3)
-	pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
+	pms := NewPromise(context.Background(), pool, func(req Request) Result {
 		// .... Do task 1
 		log.Println("do task one")
 		return Result{}
-	}).Then(func(ctx context.Context, req Request) Result {
+	}).Then(func(req Request) Result {
 		// .... Do task 2
 		log.Println("do task two")
 		return Result{
@@ -53,7 +53,7 @@ func ExamplePromiseChain() {
 
 func ExamplePromiseRetry() {
 	pool := NewPool(3)
-	pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
+	pms := NewPromise(context.Background(), pool, func(req Request) Result {
 		// .... Do task 1
 		log.Println("do task one")
 		return Result{
@@ -61,13 +61,13 @@ func ExamplePromiseRetry() {
 		}
 	})
 
-	pms.Recover(func(ctx context.Context, req Request) Result {
+	pms.Recover(func(req Request) Result {
 		// .... try recover
 		log.Println("try recover err:", req.LastErr())
 		return Result{
 			Err: nil, // recover success
 		}
-	}).HandleException(func(ctx context.Context, req Request) Result {
+	}).HandleException(func(req Request) Result {
 		// .... handle retry field
 		log.Println("recover failed")
 		return Result{

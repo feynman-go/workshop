@@ -45,15 +45,14 @@ func (pool *Pool) MaxLocalID() int {
 }
 
 func (pool *Pool) Feed(box TaskBox) error {
-	ctx := box.ctx
 	if box.stubborn {
-		if !pool.tryFeedBlock(ctx, box, box.localId) {
+		if !pool.tryFeedBlock(box, box.localId) {
 			return errors.New("stubborn " +
 				"feed block")
 		}
 	} else {
 		id := atomic.AddUintptr(&pool.offset, 1)
-		if !pool.tryFeedBlock(ctx, box, int(id)) {
+		if !pool.tryFeedBlock(box, int(id)) {
 			return errors.New("feed block")
 		}
 	}
@@ -63,9 +62,9 @@ func (pool *Pool) Feed(box TaskBox) error {
 func (pool *Pool) tryFeedNoBlock(box TaskBox, id int) bool {
 	var wk = pool.getWorker(id)
 	select {
-	case <-pool.closed:
+	case <- pool.closed:
 		return false
-	case <-box.closed:
+	case <- box.ctx.Done():
 		return false
 	case wk.c <- box:
 		return true
@@ -74,24 +73,20 @@ func (pool *Pool) tryFeedNoBlock(box TaskBox, id int) bool {
 	}
 }
 
-func (pool *Pool) tryFeedBlock(ctx context.Context, box TaskBox, id int) bool {
+func (pool *Pool) tryFeedBlock(box TaskBox, id int) bool {
 	var wk = pool.getWorker(id)
 	select {
 	case <-pool.closed:
 		return false
-	case <-box.closed:
+	case <- box.ctx.Done():
 		return false
 	case wk.c <- box: // first check not in loop, why? more faster
 		return true
-	case <-ctx.Done():
-		return false
 	default:
 		//
 		for {
 			select {
-			case <-box.closed:
-				return false
-			case <-ctx.Done():
+			case <-box.ctx.Done():
 				return false
 			case wk.c <- box:
 				return true
@@ -171,16 +166,14 @@ func (w *worker) run() (err error) {
 			if !ok {
 				return nil
 			}
-			newCtx, cancel := context.WithCancel(context.Background())
-			go func(ctx context.Context, taskClose, workerClose <-chan struct{}, cancel func()) {
+			newCtx, cancel := context.WithCancel(box.ctx)
+			go func(ctx context.Context, workerClose <-chan struct{}, cancel func()) {
 				select {
 				case <-workerClose:
 					cancel()
-				case <-taskClose:
-					cancel()
 				case <-newCtx.Done():
 				}
-			}(newCtx, box.closed, w.closed, cancel)
+			}(newCtx, w.closed, cancel)
 			box.f(newCtx, idx)
 			cancel()
 		}

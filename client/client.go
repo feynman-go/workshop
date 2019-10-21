@@ -47,7 +47,6 @@ func New(agent Agent, option Option) *Client {
 		pool: promise.NewPool(*option.ParallelCount),
 		agent: agent,
 	}
-
 	return clt
 }
 
@@ -94,7 +93,7 @@ func (client *Client) Do(ctx context.Context, operation func(ctx context.Context
 		defer pl.Close()
 	}
 
-	p := promise.NewPromise(client.pool, func(ctx context.Context, req promise.Request) promise.Result {
+	p := promise.NewPromise(context.Background(), client.pool, func(req promise.Request) promise.Result {
 		err := operation(ctx, client.agent)
 		return promise.Result{
 			Err: err,

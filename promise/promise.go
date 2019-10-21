@@ -2,25 +2,41 @@ package promise
 
 import (
 	"context"
-	"net/textproto"
 	"sync"
+	"time"
 )
 
 type Request struct {
 	from      *processInstance
 	partition bool
 	eventKey  int
-	head      textproto.MIMEHeader
 	ctx context.Context
 }
 
-/*func (r Request) WithHead(key, value string) Request {
-	if r.head == nil {
-		r.head = textproto.MIMEHeader{}
-	}
-	r.head.Set(key, value)
+func (r Request) WithContextValue(key, value string) Request {
+	ctx := context.WithValue(r.ctx, key, value)
+	r.ctx = ctx
 	return r
-}*/
+}
+
+func (r Request) WithContextCancel() (Request, func()) {
+	ctx, cancel := context.WithCancel(r.ctx)
+	r.ctx = ctx
+	return r, cancel
+}
+
+func (r Request) WithContextTimeout(duration time.Duration) (Request, func()) {
+	ctx, cancel := context.WithTimeout(r.ctx, duration)
+	r.ctx = ctx
+	return r, cancel
+}
+
+func (r Request) WithContextDeadline(deadline time.Time) (Request, func()) {
+	ctx, cancel := context.WithDeadline(r.ctx, deadline)
+	r.ctx = ctx
+	return r, cancel
+}
+
 
 func (r Request) Context() context.Context {
 	if r.ctx == nil {
@@ -35,20 +51,6 @@ func (r Request) PromiseKey() int {
 
 func (r Request) Partition() bool {
 	return r.partition
-}
-
-func (r Request) GetHead(key string) string {
-	return r.head.Get(key)
-}
-
-func (r Request) RangeHead(iter func(k, v string) bool) {
-	if r.head != nil {
-		for k := range r.head {
-			if !iter(k, r.head.Get(k)) {
-				break
-			}
-		}
-	}
 }
 
 type Profile struct {
@@ -109,8 +111,8 @@ type Promise struct {
 	*chanStatus
 }
 
-func NewPromise(pool *Pool, process ProcessFunc, middles ...Middle) *Promise {
-	return newPromise(process, new(MiddleLink).Append(middles...), pool)
+func NewPromise(ctx context.Context, pool *Pool, process ProcessFunc, middles ...Middle) *Promise {
+	return newPromise(ctx, process, new(MiddleLink).Append(middles...), pool)
 }
 
 // only on success, return a new Process, basic interface
@@ -156,7 +158,7 @@ func (p *Promise) Get(ctx context.Context, close bool) (interface{}, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-p.closeChan:
+	case <-p.ctx.Done():
 		var err error
 		var v *Result
 		//Need sync. Because of golang memory modal.
@@ -246,6 +248,11 @@ func (p *Promise) newTaskBox(req Request, taskFunc TaskFunc) TaskBox {
 func (p *Promise) post(lastProcess *processInstance) error {
 	req := Request{
 		from: lastProcess,
+		ctx: p.ctx,
+	}
+
+	if req.ctx == nil {
+		req.ctx = context.Background()
 	}
 
 	profile := Profile{req: &req, Process: p.process}
@@ -332,27 +339,32 @@ func fromPromise(from *Promise, process ProcessFunc, middles []Middle) *Promise 
 	return p
 }
 
-func newPromise(process ProcessFunc, link *MiddleLink, pool *Pool) *Promise {
+func newPromise(ctx context.Context, process ProcessFunc, link *MiddleLink, pool *Pool) *Promise {
+	ctx, cancel := context.WithCancel(ctx)
+
 	p := new(Promise)
 	p.pool = pool
 	p.middles = link
 	p.process = process
 	var st = new(chanStatus)
 	st.err = new(error)
-	st.closeChan = make(chan struct{}, 0)
+	st.ctxCancelFunc = cancel
 	st.started = false
+	st.ctx = ctx
+
 	st.root = p
 	p.chanStatus = st
 	return p
 }
 
 type chanStatus struct {
-	started      bool
-	closeChan    chan struct{}
-	lastInstance *processInstance
-	err          *error
-	root         *Promise
-	mu           sync.RWMutex
+	started       bool
+	lastInstance  *processInstance
+	err           *error
+	root          *Promise
+	mu            sync.RWMutex
+	ctx           context.Context
+	ctxCancelFunc func()
 }
 
 func (s *chanStatus) tryUnStart(f func()) bool {
@@ -412,7 +424,7 @@ func (s *chanStatus) getResult() (*Result, error) {
 
 func (s *chanStatus) isClosed() bool {
 	select {
-	case <-s.closeChan:
+	case <-s.ctx.Done():
 		return true
 	default:
 		return false
@@ -421,7 +433,7 @@ func (s *chanStatus) isClosed() bool {
 
 func (s *chanStatus) CloseWithContext(ctx context.Context) error {
 	select {
-	case <-s.closeChan:
+	case <-s.ctx.Done():
 		if s.err != nil {
 			return *s.err
 		}
@@ -434,9 +446,9 @@ func (s *chanStatus) CloseWithContext(ctx context.Context) error {
 func (s *chanStatus) close(err error, instance *processInstance) {
 	s.mu.Lock()
 	select {
-	case <-s.closeChan:
+	case <-s.ctx.Done():
 	default:
-		close(s.closeChan)
+		s.ctxCancelFunc()
 		*s.err = err
 		s.lastInstance = instance
 	}
@@ -444,5 +456,5 @@ func (s *chanStatus) close(err error, instance *processInstance) {
 }
 
 func (s *chanStatus) getCloseChan() <-chan struct{} {
-	return s.closeChan
+	return s.ctx.Done()
 }

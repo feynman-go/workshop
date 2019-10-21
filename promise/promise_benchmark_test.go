@@ -13,12 +13,12 @@ func BenchmarkNewPromise(b *testing.B) {
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
-		var pc = func(ctx context.Context, request Request) Result {
+		var pc = func(request Request) Result {
 			return Result{}
 		}
 
 		for pb.Next() {
-			p := NewPromise(pool, pc)
+			p := NewPromise(context.Background(), pool, pc)
 			_, err := p.Get(context.Background(), true)
 			if err != nil {
 				b.Fatal(err)
@@ -35,12 +35,12 @@ func BenchmarkNewPartitionPromise(b *testing.B) {
 	var i = 0
 
 	b.RunParallel(func(pb *testing.PB) {
-		var pc = func(ctx context.Context, request Request) Result {
+		var pc = func(request Request) Result {
 			return Result{}
 		}
 
 		for pb.Next() {
-			p := NewPromise(pool, pc, EventKeyMiddle(i), PartitionMiddle(true))
+			p := NewPromise(context.Background(), pool, pc, EventKeyMiddle(i), PartitionMiddle(true))
 			_, err := p.Get(context.Background(), true)
 			if err != nil {
 				b.Fatal(err)

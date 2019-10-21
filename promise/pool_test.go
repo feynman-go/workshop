@@ -17,8 +17,8 @@ func TestPoolParallelFeedBlock(t *testing.T) {
 	for i := 0 ; i < 100; i ++{
 		go func(i int) {
 			start := time.Now()
-			p.Feed(context.Background(), TaskBox{
-				closed: make(chan struct{}),
+			p.Feed(TaskBox{
+				ctx: context.Background(),
 				f: TaskFunc(func(ctx context.Context, localId int) {
 					time.Sleep(100 * time.Millisecond)
 				}),

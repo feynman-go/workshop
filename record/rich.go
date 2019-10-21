@@ -184,11 +184,9 @@ func (factory *TracerFactory) ActionRecorder(ctx context.Context, name string, f
 	}
 
 	span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, tracer, name, opt)
-
 	return &TracerRecorder {
 		span: span,
 	}, ctx
-
 }
 
 

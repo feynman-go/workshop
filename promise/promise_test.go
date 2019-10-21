@@ -13,7 +13,7 @@ import (
 func TestPromise(t *testing.T) {
 	t.Run("basic simple promise", func(t *testing.T) {
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			return Result{
 				Payload: true,
 			}
@@ -35,13 +35,13 @@ func TestPromise(t *testing.T) {
 		var reach bool
 		var failed bool
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, last Request) Result {
+		pms := NewPromise(context.Background(), pool, func(last Request) Result {
 			reach = true
 			return Result{
 				Payload: true,
 				Err:     errors.New("expect err"),
 			}
-		}).OnException(func(ctx context.Context, last Request) Result {
+		}).OnException(func(last Request) Result {
 			failed = true
 			return Result{
 				Payload: false,
@@ -73,7 +73,7 @@ func TestPromise(t *testing.T) {
 	t.Run("basic simple failed", func(t *testing.T) {
 		var failed = errors.New("failed")
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
+		pms := NewPromise(context.Background(), pool, func(req Request) Result {
 			return Result{
 				Err:     failed,
 				Payload: true,
@@ -92,13 +92,13 @@ func TestPromise(t *testing.T) {
 		var reach bool
 		var failed bool
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, last Request) Result {
+		pms := NewPromise(context.Background(), pool, func(last Request) Result {
 			reach = true
 			return Result{
 				Payload: true,
 				Err:     errors.New("expect err"),
 			}
-		}).OnException(func(ctx context.Context, last Request) Result {
+		}).OnException(func(last Request) Result {
 			failed = true
 			return Result{
 				Payload: false,
@@ -130,7 +130,7 @@ func TestPromise(t *testing.T) {
 	t.Run("test promise Wait time", func(t *testing.T) {
 		pool := NewPool(3)
 		var startTime time.Time
-		pms := NewPromise(pool, func(ctx context.Context, req Request) Result {
+		pms := NewPromise(context.Background(), pool, func(req Request) Result {
 			startTime = time.Now()
 			return Result{
 				Err:     nil,
@@ -156,17 +156,17 @@ func TestPromiseChain(t *testing.T) {
 		var list = []int{}
 
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			list = append(list, 0)
 			return Result{
 				Payload: true,
 			}
-		}).Then(func(ctx context.Context, request Request) Result {
+		}).Then(func(request Request) Result {
 			list = append(list, 1)
 			return Result{
 				Payload: true,
 			}
-		}).Then(func(ctx context.Context, last Request) Result {
+		}).Then(func(last Request) Result {
 			list = append(list, 2)
 			return Result{
 				Payload: true,
@@ -196,23 +196,23 @@ func TestPromiseChain(t *testing.T) {
 		var list = []int{}
 
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			list = append(list, 0)
 			return Result{
 				Payload: true,
 			}
-		}).Then(func(ctx context.Context, request Request) Result {
+		}).Then(func(request Request) Result {
 			list = append(list, 1)
 			return Result{
 				Payload: true,
 			}
-		}).Then(func(ctx context.Context, request Request) Result {
+		}).Then(func(request Request) Result {
 			list = append(list, 1)
 			return Result{
 				Payload: true,
 				Err:     errors.New("1"),
 			}
-		}).OnException(func(ctx context.Context, request Request) Result {
+		}).OnException(func(request Request) Result {
 			list[2] = 2
 			return Result{
 				Payload: true,
@@ -242,7 +242,7 @@ func TestPromiseChain(t *testing.T) {
 func TestPromiseCloseWait(t *testing.T) {
 	t.Run("test Wait timeout", func(t *testing.T) {
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			time.Sleep(100 * time.Millisecond)
 			return Result{
 				Payload: true,
@@ -258,7 +258,7 @@ func TestPromiseCloseWait(t *testing.T) {
 
 	t.Run("test Wait timeout", func(t *testing.T) {
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			time.Sleep(100 * time.Millisecond)
 			return Result{
 				Payload: true,
@@ -277,7 +277,7 @@ func TestRecovery(t *testing.T) {
 	t.Run("basic recovery and retry", func(t *testing.T) {
 		var recovered bool
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			if !recovered {
 				return Result{
 					Err: errors.New("Process err"),
@@ -286,10 +286,10 @@ func TestRecovery(t *testing.T) {
 			return Result{
 				Payload: true,
 			}
-		}).Recover(func(ctx context.Context, req Request) Result {
+		}).Recover(func(req Request) Result {
 			recovered = true
 			return Result{}
-		}).HandleException(func(ctx context.Context, req Request) Result {
+		}).HandleException(func(req Request) Result {
 			recovered = false
 			return Result{
 				Err: errors.New("bad recover"),
@@ -311,7 +311,7 @@ func TestRecovery(t *testing.T) {
 	t.Run("basic recovery multi times", func(t *testing.T) {
 		var recovered int
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			if recovered < 100 {
 				return Result{
 					Err: errors.New("Process err"),
@@ -320,10 +320,10 @@ func TestRecovery(t *testing.T) {
 			return Result{
 				Payload: true,
 			}
-		}).Recover(func(ctx context.Context, request Request) Result {
+		}).Recover(func(request Request) Result {
 			recovered++
 			return Result{}
-		}).HandleException(func(ctx context.Context, req Request) Result {
+		}).HandleException(func(req Request) Result {
 			return Result{
 				Err: errors.New("bad recover"),
 			}
@@ -349,7 +349,7 @@ func TestRecovery(t *testing.T) {
 		var recovered int
 		var failed bool
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			if recovered < 100 {
 				return Result{
 					Err: errors.New("Process err"),
@@ -358,7 +358,7 @@ func TestRecovery(t *testing.T) {
 			return Result{
 				Payload: true,
 			}
-		}).Recover(func(ctx context.Context, request Request) Result {
+		}).Recover(func(request Request) Result {
 			recovered++
 			if recovered >= 100 {
 				failed = true
@@ -394,7 +394,7 @@ func TestPromiseMultiTimeOut(t *testing.T) {
 			gp.Add(1)
 
 			go func() {
-				pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+				pms := NewPromise(context.Background(), pool, func(request Request) Result {
 					time.Sleep(100 * time.Millisecond)
 					return Result{
 						Payload: true,
@@ -420,7 +420,7 @@ func TestPromiseMultiTimeOut(t *testing.T) {
 func TestPartitionPromise(t *testing.T) {
 	t.Run("basic simple promise", func(t *testing.T) {
 		pool := NewPool(3)
-		pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+		pms := NewPromise(context.Background(), pool, func(request Request) Result {
 			return Result{
 				Payload: true,
 			}
@@ -449,7 +449,7 @@ func TestLargeRequest(t *testing.T) {
 			gp.Add(1)
 
 			go func() {
-				pms := NewPromise(pool, func(ctx context.Context, request Request) Result {
+				pms := NewPromise(context.Background(), pool, func(request Request) Result {
 					time.Sleep(100 * time.Millisecond)
 					atomic.AddInt32(&count, 1)
 					return Result{

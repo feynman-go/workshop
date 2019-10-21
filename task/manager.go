@@ -327,7 +327,7 @@ func (svc *Manager) doProcess(ctx context.Context, awaken Awaken) error {
 		return err
 	}
 
-	p := promise.NewPromise(svc.pool, func(ctx context.Context, req promise.Request) promise.Result {
+	p := promise.NewPromise(context.Background(), svc.pool, func(req promise.Request) promise.Result {
 		task, err := svc.scheduler.ReadTask(ctx, awaken.TaskKey)
 		if err != nil {
 			return promise.Result{

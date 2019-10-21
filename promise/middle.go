@@ -35,9 +35,9 @@ func WrapProcess(name string, wrapper func(ProcessFunc) ProcessFunc) Middle {
 
 func WrapTimeout(name string, timeout time.Duration) Middle {
 	return WrapProcess(name, func(p ProcessFunc) ProcessFunc {
-		return func(ctx context.Context, req Request) Result {
-			ctx, _ = context.WithTimeout(ctx, timeout)
-			return p(ctx, req)
+		return func(req Request) Result {
+			req, _ = req.WithContextTimeout(timeout)
+			return p(req)
 		}
 	})
 }
