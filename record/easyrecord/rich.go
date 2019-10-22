@@ -147,9 +147,13 @@ func (factory *LoggerFactory) commit(name string, startTime time.Time, err error
 	}
 
 	if err == nil {
-		logger.Info(factory.desc, fs...)
+		logger.Debug(factory.desc, fs...)
 	} else {
-		logger.Error(factory.desc, fs...)
+		if levelErr, ok := err.(LevelErr); ok && levelErr.Level() == WarningLevel {
+			logger.Warn(factory.desc, fs...)
+		} else {
+			logger.Error(factory.desc, fs...)
+		}
 	}
 }
 
@@ -212,3 +216,29 @@ func (recorder TracerRecorder) Commit(err error, fields ...record.Field) {
 
 type skipRecorder struct {}
 func (recorder skipRecorder) Commit(err error, fields ...record.Field) {}
+
+type ErrLevel int
+
+const(
+	WarningLevel ErrLevel = 1
+)
+
+type LevelErr interface {
+	Level() ErrLevel
+	error
+}
+
+func WarningErr(err error) error {
+	return levelErr {
+		err, WarningLevel,
+	}
+}
+
+type levelErr struct {
+	error
+	level ErrLevel
+}
+
+func (le levelErr) LevelErr() ErrLevel{
+	return le.level
+}
