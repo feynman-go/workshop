@@ -89,7 +89,7 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 }
 
 type BalanceLeaders struct {
-	scheduler balance.MemberScheduler
+	scheduler balance.RingScheduler
 	leaders *Leaders
 }
 
@@ -101,12 +101,16 @@ func (bls *BalanceLeaders) GetLeaders() *Leaders {
 	return bls.leaders
 }
 
+func (bls *BalanceLeaders) AddNode(ctx context.Context, nodeID int64) {
+
+}
+
 func (bls *BalanceLeaders) run(ctx context.Context) {
 	for ctx.Err() == nil {
+		tk := time.NewTicker(10 * time.Second)
 		schedules, err := bls.scheduler.WaitMemberSchedules(ctx)
 		if err != nil {
 			continue
 		}
-
 	}
 }

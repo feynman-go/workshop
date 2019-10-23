@@ -1,184 +1,130 @@
 package balance
 
 import (
-	"sort"
+	"fmt"
+	"github.com/MauriceGit/skiplist"
 	"sync"
-	"sync/atomic"
 )
 
-type Balancer struct {
-	rw       sync.RWMutex
-	instance []*Instance
-	schedule Scheduler
+type Ring struct {
+	transaction int64
+	max int64
+	rw sync.RWMutex
+	list skiplist.SkipList
 }
 
-func New(schedule Scheduler, instances []*Instance) *Balancer {
-	ret := &Balancer{
-		instance: instances,
-		schedule: schedule,
-	}
-	for i, in := range instances {
-		in.updateRef(i, ret)
-		in.UpdateScore(in.Score())
-	}
-	return ret
-}
-
-func (b *Balancer) Pick(key interface{}) *Instance {
-	b.rw.RLock()
-	defer b.rw.RUnlock()
-	l := len(b.instance)
-
-	i := b.schedule.Pick(key, l)
-	if i < 0 || i >= l {
-		return nil
-	}
-	ret := b.instance[i]
-	if ret.Score() < 0 {
-		return nil
-	}
-	return ret
-}
-
-func (b *Balancer) updateInstanceStatus(i int, score int32) {
-	b.rw.RLock()
-	defer b.rw.RUnlock()
-	l := len(b.instance)
-	if i < 0 || i >= l {
-		return
-	}
-	b.schedule.UpdateStatus(i, score)
-}
-
-type Instance struct {
-	rw    sync.RWMutex
-	score int32
-	index int
-	v     interface{}
-	b     *Balancer
-}
-
-func NewInstance(v interface{}, score int32) *Instance {
-	return &Instance{
-		v:     v,
-		score: score,
+func NewRing(max int64) *Ring {
+	return &Ring {
+		max: max,
+		list: skiplist.New(),
 	}
 }
 
-// > 0 healthy; < 0 unhealthy; == 0 unknown, more high score more health, can also use as weight
-func (ins *Instance) Score() int32 {
-	ins.rw.RLock()
-	defer ins.rw.RUnlock()
-	return ins.score
+func (r *Ring) MapNode(key int64) *Node {
+	r.rw.RLock()
+	defer r.rw.RUnlock()
+
+	e, _ :=  r.list.FindGreaterOrEqual(element(key))
+	if e == nil {
+		e = r.list.GetSmallestNode()
+	}
+	if e != nil {
+		return e.GetValue().(*Node)
+	}
+	return nil
 }
 
-func (ins *Instance) Value() interface{} {
-	ins.rw.RLock()
-	defer ins.rw.RUnlock()
-	return ins.v
-}
+func (r *Ring) AddNode(node Node, overwrite bool) (Range, bool) {
+	r.rw.Lock()
+	defer r.rw.Unlock()
 
-func (ins *Instance) Update(v interface{}, score int32) {
-	ins.rw.Lock()
-	defer ins.rw.Unlock()
-	ins.v = v
-	ins.updateScore(score)
-}
-
-func (ins *Instance) UpdateValue(v interface{}) {
-	ins.rw.Lock()
-	defer ins.rw.Unlock()
-	ins.v = v
-}
-
-func (ins *Instance) UpdateScore(score int32) {
-	ins.rw.Lock()
-	defer ins.rw.Unlock()
-	ins.updateScore(score)
-}
-
-func (ins *Instance) updateScore(score int32) {
-	ins.score = score
-	if ins.b != nil {
-		ins.b.updateInstanceStatus(ins.index, score)
+	input := element(node.start)
+	e, _ := r.list.FindGreaterOrEqual(input)
+	if e == nil {
+		r.list.Insert(input)
+		return Range{}, false
+	}
+	if e.GetValue() == input {
+		return Range{}, false
 	}
 }
 
-func (ins *Instance) updateRef(index int, b *Balancer) {
-	ins.rw.Lock()
-	defer ins.rw.Unlock()
-	ins.index = index
-	ins.b = b
+func (r *Ring) GetNode(id int64) *Node {
+
 }
 
-type Scheduler interface {
-	// return < 0 means no instance available
-	Pick(key interface{}, total int) int
-	UpdateStatus(index int, score int32)
+func (r *Ring) RemoveNode(start int64, overwrite bool) (Range, bool) {
+
 }
 
-// scheduler implement
-type RoundRobin struct {
-	rw         sync.RWMutex
-	monotonous uint64
-	list       []*robinItem
-	cur        uint64
-	sum        uint64
-	start      int
+func (r *Ring) GetAffectRange(start int64) Range {
+
 }
 
-type robinItem struct {
-	index int
-	score int32
-	start uint64
+func (r *Ring) Replace(fromNodeKey int64, toNodeKey int64) {
+
 }
 
-func (rr *RoundRobin) Pick(partition int64, total int) int {
-	rr.rw.RLock()
-	defer rr.rw.RUnlock()
+func (r *Ring) WithTransaction(transaction Transaction) *Ring {
 
-	l := len(rr.list)
-
-	cur := atomic.AddUint64(&rr.monotonous, 1)
-	idx := cur % rr.sum
-
-	i := sort.Search(l, func(i int) bool {
-		r := rr.list[i]
-		return r.score >= 0 && (r.start+uint64(r.score)+1) > idx
-	})
-	if i < 0 || i >= l {
-		return -1
-	}
-	return rr.list[i].index
 }
 
-func (rr *RoundRobin) UpdateStatus(index int, score int32) {
-	rr.rw.Lock()
-	defer rr.rw.Unlock()
+type Range struct {
+	From *Node
+	To *Node
+}
 
-	var ext bool
+type Node struct {
+	id int64
+	start int64
+	length int64
+	availability float64
+}
 
-	var start uint64 = 0
-	rr.sum = 0
-	for _, r := range rr.list {
-		if r.index == index {
-			r.score = score
-			ext = true
-		}
-		r.start = start
-		if r.score >= 0 {
-			ct := 1 + uint64(r.score)
-			start = r.start + ct
-			rr.sum += ct
-		}
-	}
-	if !ext {
-		rr.list = append(rr.list, &robinItem{
-			index: index,
-			score: score,
-			start: start,
-		})
-		ct := 1 + uint64(score)
-		rr.sum += ct
-	}
+func (e Node) ID() int64 {
+	return e.id
+}
+
+func (e Node) Available() float64 {
+	return e.availability
+}
+
+func (e Node) StartKey() int64 {
+	return e.start
+}
+
+// not equal
+func (e Node) EndKey() int64 {
+	return e.start + e.length
+}
+
+func (e Node) ExtractKey() float64 {
+	return float64(e.start)
+}
+
+func (e Node) String() string {
+	return fmt.Sprintf("%03d", e.start)
+}
+
+type element int64
+
+func (e element) ExtractKey() float64 {
+	return float64(e)
+}
+func (e element) String() string {
+	return fmt.Sprintf("%03d", e)
+}
+
+type NodeUpdate struct {
+	Form *Node // if from is nil, means node is insert
+	To *Node // if to is nil, means node is removed
+}
+
+type Transaction struct {
+	Sequence int64
+	Updates []NodeUpdate
+}
+
+type RingScheduler interface {
+	ScheduleRing(ring *Ring) (*Transaction, error)
 }
