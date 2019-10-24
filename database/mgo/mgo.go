@@ -166,30 +166,51 @@ func (mgo *DbClient) CloseWithContext(ctx context.Context) error {
 }
 
 type majorAgent struct {
-	db *mongo.Database
-	option MajorOption
+	client *mongo.Client
+	db     *mongo.Database
+	option SingleOption
 	cltOpt client.Option
 }
 
-type MajorOption struct {
+type SingleOption struct {
 	*options.ClientOptions
 	Parallel int
 	Database string
 }
 
-func NewMajorAgent(option MajorOption) (DbAgent, error) {
-	clt, err := mongo.NewClient(option.ClientOptions)
+func NewSingleAgent(option SingleOption) (DbAgent, error) {
+	_, err := mongo.NewClient(option.ClientOptions) // try new client
 	if err != nil {
 		return nil, err
 	}
-
-	dbOpt := options.Database()
 	return &majorAgent{
-		db: clt.Database(option.Database, dbOpt),
+		option: option,
 	}, nil
 }
 
-func (agent *majorAgent) setUpClientOption(opt MajorOption) {
+func (agent *majorAgent) refreshClientDatabase(ctx context.Context) error {
+	if agent.db != nil {
+		agent.db.Client().Disconnect(ctx)
+	}
+
+	clt, err := mongo.NewClient(agent.option.ClientOptions)
+	if err != nil {
+		return err
+	}
+
+	err = clt.Connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	dbOpt := options.Database()
+	db := clt.Database(agent.option.Database, dbOpt)
+
+	agent.db = db
+	return nil
+}
+
+func (agent *majorAgent) setUpClientOption(opt SingleOption) {
 	cltOpt := &client.Option{}
 	if opt.Parallel != 0 {
 		cltOpt.SetParallelCount(opt.Parallel)
@@ -201,17 +222,7 @@ func (agent *majorAgent) GetDB(ctx context.Context) (db *mongo.Database, err err
 }
 
 func (agent *majorAgent) TryRecovery(ctx context.Context) error {
-	clt := agent.db.Client()
-	clt.Disconnect(ctx)
-	err := clt.Connect(ctx)
-	if err != nil {
-		return err
-	}
-	err = clt.Ping(ctx, nil)
-	if err != nil {
-		return err
-	}
-	return nil
+	return agent.refreshClientDatabase(ctx)
 }
 
 func (agent *majorAgent) CloseWithContext(ctx context.Context) error {

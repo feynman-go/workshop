@@ -17,8 +17,35 @@ func EasyRecorders(desc string, factory ...record.Factory) record.Factory {
 	fs = append(fs, NewLoggerRecorderFactory(nil, desc))
 	fs = append(fs, NewPromRecorderFactory(desc))
 	fs = append(fs, factory...)
-	return record.ChainFactory(fs...)
+	return wrapperEasy{record.ChainFactory(fs...)}
 }
+
+type easyRecordKey struct {}
+
+func EasyRecordFromContext(ctx context.Context, dft record.Factory) record.Factory {
+	v := ctx.Value(easyRecordKey{})
+	records, _ := v.(record.Factory)
+	if records == nil {
+		records = dft
+	}
+	return records
+}
+
+func ContextWithRecords(ctx context.Context, factory record.Factory) context.Context {
+	return context.WithValue(ctx, easyRecordKey{}, factory)
+}
+
+type wrapperEasy struct {
+	f record.Factory
+}
+
+func (easy wrapperEasy) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
+	if EasyRecordFromContext(ctx, nil) == nil {
+		return skipRecorder{}, ContextWithRecords(ctx, easy.f)
+	}
+	return skipRecorder{}, ctx
+}
+
 
 type PromFactory struct {
 	fields map[string]bool
@@ -35,9 +62,9 @@ func NewPromRecorderFactory(name string, fields ...string) *PromFactory {
 
 	hv := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: name,
-		Help: name,
 	}, fields)
 
+	prometheus.MustRegister(hv)
 	return &PromFactory{
 		fields: fs,
 		hv: hv,
@@ -147,13 +174,9 @@ func (factory *LoggerFactory) commit(name string, startTime time.Time, err error
 	}
 
 	if err == nil {
-		logger.Debug(factory.desc, fs...)
+		logger.Info(factory.desc, fs...)
 	} else {
-		if levelErr, ok := err.(LevelErr); ok && levelErr.Level() == WarningLevel {
-			logger.Warn(factory.desc, fs...)
-		} else {
-			logger.Error(factory.desc, fs...)
-		}
+		logger.Error(factory.desc, fs...)
 	}
 }
 
@@ -216,29 +239,3 @@ func (recorder TracerRecorder) Commit(err error, fields ...record.Field) {
 
 type skipRecorder struct {}
 func (recorder skipRecorder) Commit(err error, fields ...record.Field) {}
-
-type ErrLevel int
-
-const(
-	WarningLevel ErrLevel = 1
-)
-
-type LevelErr interface {
-	Level() ErrLevel
-	error
-}
-
-func WarningErr(err error) error {
-	return levelErr {
-		err, WarningLevel,
-	}
-}
-
-type levelErr struct {
-	error
-	level ErrLevel
-}
-
-func (le levelErr) LevelErr() ErrLevel{
-	return le.level
-}

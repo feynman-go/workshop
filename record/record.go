@@ -134,7 +134,7 @@ func (cf chainFactory) ActionRecorder(ctx context.Context, name string, fields .
 		rd, retCtx = f.ActionRecorder(retCtx, name, fields...)
 		records = append(records, rd)
 	}
-	return chainRecorder(records), ctx
+	return chainRecorder(records), retCtx
 }
 
 type chainRecorder []Recorder
