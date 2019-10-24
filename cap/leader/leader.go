@@ -262,11 +262,11 @@ func (mb *Member) Start() bool {
 	}
 }
 
-func (mb *Member) StartElector(ctx context.Context) {
+func (mb *Member) StartElect(ctx context.Context) {
 
 }
 
-func (mb *Member) DelayLeader(ctx context.Context) {
+func (mb *Member) DelayKeepLive(ctx context.Context) {
 
 }
 

@@ -2,8 +2,9 @@ package leader
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/cap/balance"
+	cluster2 "github.com/feynman-go/workshop/cap/cluster"
 	"github.com/feynman-go/workshop/syncrun"
+	"github.com/feynman-go/workshop/syncrun/prob"
 	"sync"
 	"time"
 )
@@ -68,6 +69,14 @@ func (pl *Leaders) AllPartitions() []PartitionID {
 	return ids
 }
 
+func (pl *Leaders) GetPartitionMember(ctx context.Context, id PartitionID) *Member {
+	p := pl.mb[id]
+	if p == nil {
+		return nil
+	}
+	return p.member
+}
+
 func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	var rs []func(ctx context.Context)
 	pl.rw.RLock()
@@ -88,29 +97,57 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	syncrun.RunAsGroup(ctx, rs...)
 }
 
-type BalanceLeaders struct {
-	scheduler balance.RingScheduler
+type LeadersReBalancer struct {
+	c *cluster2.Follower
 	leaders *Leaders
+	pb *prob.Prob
+	nodeID int64
 }
 
-func NewBalanceLeaders(scheduler balance.MemberScheduler, leaders *Leaders) *BalanceLeaders {
-
+func Rebalancer(cluster *cluster2.Follower, leaders *Leaders) *LeadersReBalancer {
+	balancer :=  &LeadersReBalancer{
+		leaders: leaders,
+	}
+	balancer.pb = prob.New(balancer.run)
+	return balancer
 }
 
-func (bls *BalanceLeaders) GetLeaders() *Leaders {
-	return bls.leaders
+func (bls *LeadersReBalancer) Start() {
+	bls.pb.Start()
 }
 
-func (bls *BalanceLeaders) AddNode(ctx context.Context, nodeID int64) {
-
+func (bls *LeadersReBalancer) Close() error {
+	bls.pb.Stop()
+	return nil
 }
 
-func (bls *BalanceLeaders) run(ctx context.Context) {
+func (bls *LeadersReBalancer) run(ctx context.Context) {
 	for ctx.Err() == nil {
-		tk := time.NewTicker(10 * time.Second)
-		schedules, err := bls.scheduler.WaitMemberSchedules(ctx)
-		if err != nil {
-			continue
-		}
+		bls.c.RunTransfer(ctx, func(ctx context.Context, ring *cluster2.Ring, transaction *cluster2.Transaction) error {
+			if transaction != nil {
+				ring = ring.WithTransaction(*transaction)
+			}
+			for _, p := range bls.leaders.AllPartitions() {
+				ringNode := ring.MapNode(int64(p))
+				if ringNode == nil {
+					continue
+				}
+				member := bls.leaders.GetPartitionMember(ctx, p)
+				if member != nil {
+					if ringNode.Node.ID == bls.nodeID {
+						// 开始延时执行 elector
+						if !member.GetInfo().IsLeader {
+							member.StartElect(ctx)
+						}
+					} else {
+						// 如果是leader 则延时KeepLive
+						member.DoAsLeader(ctx, func(ctx context.Context) {
+							member.DelayKeepLive(ctx)
+						})
+					}
+				}
+			}
+			return nil
+		})
 	}
 }
