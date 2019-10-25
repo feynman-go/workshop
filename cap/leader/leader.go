@@ -13,9 +13,12 @@ import (
 
 type MemberInfo struct {
 	LeaderID string
-	IsLeader bool
 	ElectionID string
 	Sequence int64
+}
+
+func (info MemberInfo) IsLeader() bool {
+	return info.LeaderID != "" && info.LeaderID == info.ElectionID
 }
 
 type Member struct {
@@ -28,6 +31,7 @@ type Member struct {
 	pb             *prob.Prob
 	onFollowerChan chan struct{}
 	onLeaderChan   chan struct{}
+	inited bool
 }
 
 func NewMember(elector Elector, electFactory ElectionFactory, option Option) *Member {
@@ -153,7 +157,7 @@ func (mb *Member) process(ctx task.Context, result *task.Result)  {
 
 	var delta time.Duration
 	info := mb.info
-	if info.IsLeader {
+	if info.IsLeader() {
 		delta = mb.getKeepLiveDuration()
 		go mb.startKeepLive(ctx)
 		log.Println("did start keep live next:", time.Now().Add(delta))
@@ -201,28 +205,62 @@ func (mb *Member) handleElectionNotify(ctx context.Context, election Election) {
 	if mb.info.Sequence > election.Sequence {
 		return
 	}
+	err := mb.updateElection(ctx, election)
+	if err != nil {
+		log.Println("update election err:", err)
+	}
+}
 
+func (mb *Member) updateElection(ctx context.Context, election Election) error {
 	if mb.info.Sequence == election.Sequence && mb.info.ElectionID == election.ElectID {
-		mb.info.IsLeader = true
-		log.Println("handleElectionNotify select as leader", election)
+		if !mb.info.IsLeader() {
+			log.Println("handleElectionNotify select as leader", election.ElectID, election.Sequence)
 
-		select {
-		case <- mb.onLeaderChan:
-		default:
-			close(mb.onLeaderChan)
-			mb.onFollowerChan = make(chan struct{})
+			select {
+			case <- mb.onLeaderChan:
+			default:
+				close(mb.onLeaderChan)
+				mb.onFollowerChan = make(chan struct{})
+			}
 		}
 	} else {
-		mb.info.IsLeader = false
-		select {
-		case <- mb.onFollowerChan:
-		default:
-			close(mb.onFollowerChan)
-			mb.onLeaderChan = make(chan struct{})
+		if mb.info.IsLeader() {
+			select {
+			case <- mb.onFollowerChan:
+			default:
+				close(mb.onFollowerChan)
+				mb.onLeaderChan = make(chan struct{})
+			}
 		}
 	}
 	mb.info.Sequence = election.Sequence
 	mb.info.LeaderID = election.ElectID
+	return mb.resetTask(ctx)
+}
+
+
+func (mb *Member) resetTask(ctx context.Context) error {
+	var expectDuration time.Duration
+	if !mb.inited {
+		expectDuration = mb.getElectionDuration()
+		mb.inited = true
+	} else {
+		if mb.info.IsLeader() {
+			expectDuration = mb.getKeepLiveDuration()
+		} else {
+			expectDuration = mb.getElectionDuration()
+		}
+	}
+
+	err := mb.tasks.ApplyNewTask(ctx, "process", task.Option{}.
+		SetExpectStartTime(time.Now().Add(expectDuration)).
+		SetMaxExecDuration(mb.getExecDuration()).
+		SetMaxRecoverCount(0))
+
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (mb *Member) Start() bool {
@@ -232,16 +270,7 @@ func (mb *Member) Start() bool {
 		return false
 	} else {
 		mb.pb = prob.New(syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
-			expectTime := time.Now().Add(mb.getElectionDuration())
-			err := mb.tasks.ApplyNewTask(
-				ctx,
-				"process",
-				task.Option{}.
-					SetExpectStartTime(expectTime).
-					SetMaxExecDuration(mb.getExecDuration()).
-					SetMaxRecoverCount(0),
-			)
-
+			err := mb.resetTask(ctx)
 			if err != nil {
 				return true
 			}
@@ -262,12 +291,24 @@ func (mb *Member) Start() bool {
 	}
 }
 
-func (mb *Member) StartElect(ctx context.Context) {
+func (mb *Member) StartElect(ctx context.Context) error {
+	mb.rw.Lock()
+	defer mb.rw.Unlock()
+	err := mb.startElect(ctx)
+	if err != nil {
+		return err
+	}
 
+	return mb.resetTask(ctx)
 }
 
-func (mb *Member) DelayKeepLive(ctx context.Context) {
+func (mb *Member) ToFollower(ctx context.Context) error {
+	mb.rw.Lock()
+	defer mb.rw.Unlock()
 
+	mb.info.LeaderID = ""
+	mb.info.ElectionID = ""
+	return mb.resetTask(ctx)
 }
 
 
@@ -291,7 +332,6 @@ type Option struct {
 	MinElectDuration time.Duration
 	MaxKeepLiveDuration time.Duration
 	MinKeepLiveDuration time.Duration
-
 	MaxExecDuration time.Duration
 	MinExecDuration time.Duration
 }
