@@ -22,7 +22,7 @@ func EasyRecorders(desc string, factory ...record.Factory) record.Factory {
 
 type easyRecordKey struct {}
 
-func EasyRecordFromContext(ctx context.Context, dft record.Factory) record.Factory {
+func RecordsFromContext(ctx context.Context, dft record.Factory) record.Factory {
 	v := ctx.Value(easyRecordKey{})
 	records, _ := v.(record.Factory)
 	if records == nil {
@@ -40,10 +40,10 @@ type wrapperEasy struct {
 }
 
 func (easy wrapperEasy) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
-	if EasyRecordFromContext(ctx, nil) == nil {
-		return skipRecorder{}, ContextWithRecords(ctx, easy.f)
+	if RecordsFromContext(ctx, nil) == nil {
+		ctx = ContextWithRecords(ctx, easy.f)
 	}
-	return skipRecorder{}, ctx
+	return easy.f.ActionRecorder(ctx, name, fields...)
 }
 
 
