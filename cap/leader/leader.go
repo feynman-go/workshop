@@ -163,7 +163,7 @@ func (mb *Member) process(ctx task.Context, result *task.Result)  {
 		log.Println("did start elect next:", time.Now().Add(delta))
 	}
 
-	result.WaitAndReDo(delta)
+	result.SetWaitAndReDo(delta)
 	result.SetMaxDuration(mb.getElectionDuration())
 	result.SetMaxRecover(0)
 }
