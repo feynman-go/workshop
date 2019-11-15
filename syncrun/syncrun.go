@@ -33,7 +33,7 @@ func RunAsGroup(ctx context.Context, runner ...func(ctx context.Context)) {
 
 
 
-func FuncWithRandomStart(runFunc func(ctx context.Context) (canRestart bool), restartWait func() time.Duration) func(ctx context.Context) {
+func FuncWithReStart(runFunc func(ctx context.Context) (canRestart bool), restartWait func() time.Duration) func(ctx context.Context) {
 	return func(ctx context.Context) {
 		for ctx.Err() == nil {
 			if !runFunc(ctx) {

@@ -256,6 +256,44 @@ func (lm *breakerMiddle) WrapDo(f func(ctx context.Context, agent Agent) error, 
 	}
 }
 
+func RetryMiddle(count int, errCheck func(error) bool) DoMiddle {
+	return retryMiddle{
+		canRetry: func(err error) bool {
+			if err == nil || count == 0 {
+				return false
+			}
+			if errCheck != nil && !errCheck(err) {
+				return false
+			}
+			if count < 0 {
+				return true
+			}
+			count --
+			return true
+		},
+	}
+}
+
+type retryMiddle struct {
+	canRetry func(error) bool
+}
+
+func (middle retryMiddle) WrapDo(f func(ctx context.Context, agent Agent) error, opt ActionOption) func(ctx context.Context, agent Agent) error {
+	return func(ctx context.Context, agent Agent) error {
+		var err error
+		for ctx.Err() == nil {
+			err = f(ctx, agent)
+			if err == nil {
+				break
+			}
+			if middle.canRetry == nil || !middle.canRetry(err) {
+				break
+			}
+		}
+		return err
+	}
+}
+
 func NewRecorderMiddle(factory record.Factory) DoMiddle {
 	return &recorderMiddle{
 		factory: factory,

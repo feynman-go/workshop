@@ -269,7 +269,7 @@ func (mb *Member) Start() bool {
 	if mb.pb != nil {
 		return false
 	} else {
-		mb.pb = prob.New(syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+		mb.pb = prob.New(syncrun.FuncWithReStart(func(ctx context.Context) bool {
 			err := mb.resetTask(ctx)
 			if err != nil {
 				return true

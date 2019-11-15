@@ -219,7 +219,7 @@ func(ts *TaskScheduler) run(ctx context.Context) {
 	startKey := sortKey(0).setPartition(pid)
 	endKey := sortKey(0).setPartition(pid + 1)
 
-	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+	syncrun.FuncWithReStart(func(ctx context.Context) bool {
 		err := ts.runWatcher(ctx, startKey, endKey)
 		if err != nil {
 			log.Println("run watcher err:", err)

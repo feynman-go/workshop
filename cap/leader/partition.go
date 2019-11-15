@@ -2,9 +2,7 @@ package leader
 
 import (
 	"context"
-	cluster2 "github.com/feynman-go/workshop/cap/cluster"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
 	"sync"
 	"time"
 )
@@ -83,7 +81,7 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	for key := range pl.mb {
 		k := key
 		part := pl.mb[k]
-		rs = append(rs, syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+		rs = append(rs, syncrun.FuncWithReStart(func(ctx context.Context) bool {
 			for ctx.Err() == nil {
 				part.member.SyncLeader(ctx, func(ctx context.Context) {
 					executor(ctx, part)
@@ -97,57 +95,3 @@ func (pl *Leaders) SyncLeader(ctx context.Context, executor PartitionExecutor) {
 	syncrun.RunAsGroup(ctx, rs...)
 }
 
-type LeadersReBalancer struct {
-	c *cluster2.Follower
-	leaders *Leaders
-	pb *prob.Prob
-	nodeID int64
-}
-
-func Rebalancer(cluster *cluster2.Follower, leaders *Leaders) *LeadersReBalancer {
-	balancer :=  &LeadersReBalancer{
-		leaders: leaders,
-	}
-	balancer.pb = prob.New(balancer.run)
-	return balancer
-}
-
-func (bls *LeadersReBalancer) Start() {
-	bls.pb.Start()
-}
-
-func (bls *LeadersReBalancer) Close() error {
-	bls.pb.Stop()
-	return nil
-}
-
-func (bls *LeadersReBalancer) run(ctx context.Context) {
-	for ctx.Err() == nil {
-		bls.c.RunTransfer(ctx, func(ctx context.Context, ring *cluster2.Ring, transaction *cluster2.Transaction) error {
-			if transaction != nil {
-				ring = ring.WithTransaction(*transaction)
-			}
-			for _, p := range bls.leaders.AllPartitions() {
-				ringNode := ring.MapNode(int64(p))
-				if ringNode == nil {
-					continue
-				}
-				member := bls.leaders.GetPartitionMember(ctx, p)
-				if member != nil {
-					if ringNode.Node.ID == bls.nodeID {
-						// 开始延时执行 elector
-						if !member.GetInfo().IsLeader {
-							member.StartElect(ctx)
-						}
-					} else {
-						// 如果是leader 则延时KeepLive
-						member.DoAsLeader(ctx, func(ctx context.Context) {
-							member.DelayKeepLive(ctx)
-						})
-					}
-				}
-			}
-			return nil
-		})
-	}
-}

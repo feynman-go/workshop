@@ -156,7 +156,7 @@ func (elector *Elector) run(ctx context.Context) {
 		}},
 	}}
 
-	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+	syncrun.FuncWithReStart(func(ctx context.Context) bool {
 		err := elector.database.LongTimeDo(ctx, func(ctx context.Context, db *mongo.Database) error{
 			for ctx.Err() == nil {
 				ts := elector.getResumeTimestamp()

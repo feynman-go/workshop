@@ -389,7 +389,7 @@ func (svc *Manager) CloseWithContext(ctx context.Context) error {
 }
 
 func (svc *Manager) start(ctx context.Context) {
-	pb := prob.New(syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+	pb := prob.New(syncrun.FuncWithReStart(func(ctx context.Context) bool {
 		err := svc.runScheduler(ctx)
 		if err != nil {
 			log.Println("run scheduler err:", err)

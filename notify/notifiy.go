@@ -70,7 +70,7 @@ func (iterator *Iterator) commit(ctx context.Context, batch []Notification) erro
 }
 
 func (iterator *Iterator) run(ctx context.Context) {
-	syncrun.FuncWithRandomStart(func(ctx context.Context) bool {
+	syncrun.FuncWithReStart(func(ctx context.Context) bool {
 		err := iterator.queue.WaitOk(ctx)
 		if err != nil {
 			log.Println("wait window ok err:", err)
