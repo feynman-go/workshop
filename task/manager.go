@@ -43,9 +43,14 @@ type Context struct {
 	task    Task
 }
 
-func (cb Context) Task() Task {
-	return cb.task
+func (cb Context) TaskKey() string {
+	return cb.task.Key
 }
+
+func (cb Context) Meta() Meta {
+	return cb.task.Meta
+}
+
 
 func (cb Context) KeepLive(ctx context.Context) error {
 	err := cb.manager.KeepLive(ctx, cb.task)
@@ -114,9 +119,9 @@ func (svc *Manager) ApplyNewTask(ctx context.Context, taskKey string, option ...
 		Key:   taskKey,
 		Stage: stageID,
 		Meta: Meta{
-			Tags:       tags,
-			ExecOption: execOption,
-			CreateTime: time.Now(),
+			Tags:           tags,
+			InitExecOption: execOption,
+			CreateTime:     time.Now(),
 		},
 		Schedule: execOption.GetExpectStartSchedule(),
 	}
@@ -197,20 +202,20 @@ func (svc *Manager) KeepLive(ctx context.Context, task Task) error {
 
 func (svc *Manager) newTaskExecution(ctx context.Context, task *Task) (ok bool, err error) {
 	// reconfig by manager option
-	if task.Meta.ExecOption.MaxRecover != nil && *task.Meta.ExecOption.MaxRecover > 0 {
-		maxRestart := *task.Meta.ExecOption.MaxRecover
+	if task.Meta.InitExecOption.MaxRecover != nil && *task.Meta.InitExecOption.MaxRecover > 0 {
+		maxRestart := *task.Meta.InitExecOption.MaxRecover
 		if maxRestart < task.Meta.StartCount {
 			return false, nil
 		}
 	}
 
-	task.Schedule = task.Meta.ExecOption.GetExpectStartSchedule()
+	task.Schedule = task.Meta.InitExecOption.GetExpectStartSchedule()
 	stageID, err := svc.scheduler.NewStageID(ctx, task.Key)
 	if err != nil {
 		return false, err
 	}
 
-	task.NewExec(stageID, task.Meta.ExecOption)
+	task.NewExec(stageID, task.Meta.InitExecOption)
 	err = svc.scheduler.ScheduleTask(ctx, *task, true)
 	return true, err
 }
@@ -251,7 +256,7 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 		err = svc.scheduler.ScheduleTask(ctx, *task, true)
 	case exec.Executing():
 		if exec.OverExecTime(t) || exec.IsDead(t) {
-			if task.Meta.CanRestart() {
+			if task.Meta.canRestart() {
 				ok, err = svc.newTaskExecution(ctx, task)
 				if err == nil && !ok {
 					svc.closeTask(ctx, task)
@@ -262,7 +267,7 @@ func (svc *Manager) processTask(ctx context.Context, task *Task) error {
 		}
 	case exec.Ended():
 		if exec.Result.Continue {
-			task.Meta.ExecOption = task.Meta.ExecOption.Merge(exec.Result.NextExec)
+			task.Meta.InitExecOption = task.Meta.InitExecOption.Merge(exec.Result.NextExec)
 			ok, err = svc.newTaskExecution(ctx, task)
 			if err == nil && !ok {
 				svc.closeTask(ctx, task)
@@ -283,7 +288,7 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 	task.Execution.Start(time.Now())
 	task.Schedule = task.Execution.Config.GetExecutingSchedule()
 	task.Meta.StartCount++
-	task.Meta.ExecCount++
+	task.Meta.TotalExecCount++
 
 	err := svc.scheduler.ScheduleTask(ctx, *task, true)
 	if err != nil {
@@ -293,7 +298,7 @@ func (svc *Manager) doExec(ctx context.Context, task *Task) {
 	worker := svc.ws.fetchWorker(task.Key)
 	worker.StartExec(ctx, func(ctx context.Context) {
 		var res = &Result{}
-		res.Finish() // default is finish
+		res.SetFinish() // default is finish
 
 		svc.executor.Execute(Context{
 			Context:   ctx,

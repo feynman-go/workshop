@@ -16,80 +16,51 @@ type Recorder interface {
 	Commit(err error, fields ...Field)
 }
 
-type FieldType uint8
-
-const (
-	FieldTypeUnknown = 0
-	FieldTypeNumber = 1
-	FieldTypeString = 2
-	FieldTypeBool = 3
-)
+type FileValue interface {
+	Marshal() string
+	Value() interface{}
+}
 
 func StringField(name, value string) Field {
 	return Field{
 		Name: name,
-		Type: FieldTypeString,
-		String: value,
+		value: stringField(value),
+	}
+}
+
+func IntegerField(name string, value int64) Field {
+	return Field{
+		Name: name,
+		value: intField(value),
 	}
 }
 
 func NumberField(name string, number float64) Field {
 	return Field{
 		Name: name,
-		Type: FieldTypeNumber,
-		Number: number,
+		value: numberField(number),
 	}
 }
 
 func BoolField(name string, value bool) Field {
-	var number float64 = 0
-	if value {
-		number = 1
-	}
 	return Field{
 		Name: name,
-		Type: FieldTypeBool,
-		Number: number,
+		value: boolField(value),
 	}
 }
 
 type Field struct {
 	Name 	string
-	Type    FieldType
-	Number  float64
-	String  string
+	value   FileValue
 }
 
 func (f Field) Value() interface{} {
-	switch f.Type{
-	case FieldTypeNumber:
-		return f.Number
-	case FieldTypeString:
-		return f.String
-	case FieldTypeBool:
-		return f.Bool()
-	default:
-		return nil
-	}
-}
-
-func (f Field) Bool() bool {
-	return f.Number > 0
+	return f.value.Value()
 }
 
 func (f Field) StringValue() string {
-	switch f.Type {
-	case FieldTypeNumber:
-		return strconv.FormatFloat(f.Number, 'f', 3, 64)
-	case FieldTypeString:
-		return f.String
-	case FieldTypeBool:
-		return strconv.FormatBool(f.Number > 0)
-	default:
-		return ""
-	}
+	return f.value.Marshal()
 }
-
 
 type FactoryWrapper struct {
 	Wrapper
@@ -163,7 +134,7 @@ func (cf chainFactory) ActionRecorder(ctx context.Context, name string, fields .
 		rd, retCtx = f.ActionRecorder(retCtx, name, fields...)
 		records = append(records, rd)
 	}
-	return chainRecorder(records), ctx
+	return chainRecorder(records), retCtx
 }
 
 type chainRecorder []Recorder
@@ -173,3 +144,45 @@ func (cr chainRecorder) Commit(err error, fields ...Field) {
 		rd.Commit(err, fields...)
 	}
 }
+
+type intField int64
+
+func (f intField) Marshal() string {
+	return strconv.FormatInt(int64(f), 64)
+}
+
+func (f intField) Value() interface{} {
+	return int64(f)
+}
+
+type stringField string
+
+func (f stringField) Marshal() string {
+	return string(f)
+}
+
+func (f stringField) Value() interface{} {
+	return string(f)
+}
+
+type numberField float64
+
+func (f numberField) Marshal() string {
+	return strconv.FormatFloat(float64(f), 'e', -1, 64)
+}
+
+func (f numberField) Value() interface{} {
+	return float64(f)
+}
+
+type boolField bool
+
+func (f boolField) Marshal() string {
+	return strconv.FormatBool(bool(f))
+}
+
+func (f boolField) Value() interface{} {
+	return bool(f)
+}
+
+

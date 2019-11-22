@@ -20,7 +20,7 @@ func TestManagerBasic(t *testing.T) {
 	g.Add(1)
 	manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result)  {
 		g.Done()
-		res.Finish()
+		res.SetFinish()
 	}), ManagerOption{})
 
 	err := manager.ApplyNewTask(context.Background(), "1",
@@ -104,16 +104,16 @@ func TestTaskRetry(t *testing.T) {
 		var count int32
 		manager := NewManager(sch, ExecutorFunc(func(cb Context, res *Result) {
 			n := atomic.AddInt32(&count, 1)
-			if cb.Task().Meta.ExecCount != n {
+			if cb.Task().Meta.TotalExecCount != n {
 				t.Fatal("bad exec count")
 			}
 
-			res.WaitAndReDo(100 * time.Millisecond)
+			res.SetWaitAndReDo(100 * time.Millisecond)
 			res.SetMaxDuration(100 * time.Millisecond)
 			res.SetMaxRecover(1)
 
 			if n >= 3 {
-				res.Finish()
+				res.SetFinish()
 			}
 
 		}), ManagerOption{})

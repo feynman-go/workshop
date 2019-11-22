@@ -14,9 +14,9 @@ func ExampleBasicUse() {
 		var err error
 		// doSomething async
 		if err == nil {
-			res.Finish() //标记为结束
+			res.SetFinish() //标记为结束
 		} else {
-			res.WaitAndReDo(3 * time.Minute)
+			res.SetWaitAndReDo(3 * time.Minute)
 		}
 		return
 	})

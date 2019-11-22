@@ -34,13 +34,6 @@ func (status StatusCode) String() string {
 	}
 }
 
-//type Meta struct {
-//	TaskKey  string
-//	ExecDesc ExecOption
-//	Tags     []string
-//	Overlap  bool
-//}
-
 type Schedule struct {
 	AwakenTime         time.Time `bson:"awaken"`
 	CompensateDuration time.Duration `bson:"compensate"`
@@ -52,7 +45,6 @@ type Task struct {
 	Schedule  Schedule  `bson:"schedule"` // schedule info for scheduler to schedule
 	Meta      Meta      `bson:"meta"`      // task meta info
 	Execution Execution `bson:"execution"` // current execution info
-
 }
 
 func (t *Task) NewExec(stageID int64, option ExecOption) {
@@ -90,19 +82,19 @@ func (t *Task) Status() StatusCode {
 }*/
 
 type Meta struct {
-	Tags       []string   `bson:"tags"`
-	ExecOption ExecOption `bson:"execDesc"`
-	CreateTime time.Time  `bson:"createTime"`
-	StartCount int32      `bson:"restartCount"`
-	ExecCount  int32      `bson:"execCount"`
-	Exclusive    bool       `bson:"exclusive"`
+	Tags           []string   `bson:"tags"`
+	InitExecOption ExecOption `bson:"execDesc"`
+	CreateTime     time.Time  `bson:"createTime"`
+	StartCount     int32      `bson:"restartCount"`
+	TotalExecCount int32      `bson:"execCount"`
+	Exclusive      bool       `bson:"exclusive"` //是否独占的, 排他的
 }
 
-func (info Meta) CanRestart() bool {
-	if info.ExecOption.MaxRecover == nil {
+func (info Meta) canRestart() bool {
+	if info.InitExecOption.MaxRecover == nil {
 		return false
 	}
-	return info.StartCount < *info.ExecOption.MaxRecover
+	return info.StartCount < *info.InitExecOption.MaxRecover
 }
 
 type Execution struct {
@@ -196,19 +188,24 @@ type Result struct {
 	NextExec   ExecOption `bson:"next,omitempty"`
 }
 
-func (er *Result) Finish() {
+func (er *Result) SetResult(info string, customerCode int64) {
+	er.ResultInfo = info
+	er.ResultCode = customerCode
+}
+
+func (er *Result) SetFinish() {
 	er.Continue = false
 	return
 }
 
-func (er *Result) WaitAndReDo(wait time.Duration) *Result {
+func (er *Result) SetWaitAndReDo(wait time.Duration) *Result {
 	er.Continue = true
 	er.NextExec = er.NextExec.SetExpectStartTime(time.Now().Add(wait))
 	return er
 }
 
 // keep current task alive and return
-func (er *Result) ReturnWithLive(keepLive time.Duration) *Result {
+func (er *Result) SetReturnWithLive(keepLive time.Duration) *Result {
 	er.Continue = true
 	er.NextExec = er.NextExec.SetCompensateDuration(keepLive)
 	return er
