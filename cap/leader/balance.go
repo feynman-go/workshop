@@ -3,7 +3,7 @@ package leader
 import (
 	"context"
 	"fmt"
-	"github.com/feynman-go/workshop/cap/cluster2"
+	"github.com/feynman-go/workshop/cap/cluster"
 	"log"
 	"sort"
 	"strconv"
@@ -13,7 +13,7 @@ import (
 
 var _ Elector = (*rebalancerElector)(nil)
 
-func NewRebalancerElectors(
+func NewBalanceElectors(
 	partitionID PartitionID,
 	elector Elector,
 	nodeAgent *cluster.NodeAgent,
@@ -37,7 +37,7 @@ type rebalancerElector struct {
 }
 
 func (ba *rebalancerElector) NewElection(ctx context.Context, sequence int64) (Election, error) {
-	node, err := ba.node.GetCurrent(ctx)
+	node, err := ba.node.GetCurrentNode(ctx)
 	if err != nil {
 		return Election{}, fmt.Errorf("get current node: %v", err)
 	}
@@ -86,7 +86,7 @@ func (ba *rebalancerElector) KeepLive(ctx context.Context, keepLive KeepLive) er
 		}
 	})
 
-	ba.node.SendAck(ctx)
+	ba.node.SendCurrentInfo(ctx)
 	return nil
 }
 
@@ -96,7 +96,7 @@ func (ba *rebalancerElector) WaitElectionNotify(ctx context.Context) (Election, 
 		return e, err
 	}
 
-	node, err := ba.node.GetCurrent(ctx)
+	node, err := ba.node.GetCurrentNode(ctx)
 	if err != nil {
 		return e, fmt.Errorf("node get current: %v", err)
 	}
@@ -105,7 +105,7 @@ func (ba *rebalancerElector) WaitElectionNotify(ctx context.Context) (Election, 
 			Key: strconv.FormatInt(int64(ba.partitionID), 16),
 		})
 		if err != nil {
-			ba.node.SendAck(ctx)
+			ba.node.SendCurrentInfo(ctx)
 		}
 	}
 
@@ -116,7 +116,7 @@ func (ba *rebalancerElector) WaitElectionNotify(ctx context.Context) (Election, 
 }
 
 func (ba *rebalancerElector) expectLeaderPartition(ctx context.Context) bool {
-	node, err := ba.node.GetCurrent(ctx)
+	node, err := ba.node.GetCurrentNode(ctx)
 	if err != nil {
 		return true
 	}
@@ -129,15 +129,22 @@ func (ba *rebalancerElector) getPartitionUnitID() string {
 	return strconv.FormatInt(int64(ba.partitionID), 16)
 }
 
-var _ cluster.SchedulerFactory = (*PartitionSchedulerFactory)(nil)
+var _ cluster.Scheduler = (*PartitionScheduler)(nil)
 
-type PartitionSchedulerFactory struct {
+type PartitionScheduler struct {
 	partitions          []PartitionID
 	maxKeepLiveDuration time.Duration
 }
 
-func (factory *PartitionSchedulerFactory) StartSchedule(ctx context.Context, observer *cluster.NodeObserver) (cluster.Scheduler, error) {
-	return &PartitionScheduler{
+func NewPartitionScheduler(partitions []PartitionID, maxKeepLiveDuration time.Duration) *PartitionScheduler {
+	return &PartitionScheduler {
+		partitions: partitions,
+		maxKeepLiveDuration: maxKeepLiveDuration,
+	}
+}
+
+func (factory *PartitionScheduler) StartSchedule(ctx context.Context, observer *cluster.NodeObserver) (cluster.ScheduleTrigger, error) {
+	return &PartitionScheduleTrigger{
 		partitions: factory.partitions,
 		maxKeepLiveDuration: factory.maxKeepLiveDuration,
 		observer: observer,
@@ -148,13 +155,13 @@ const (
 	_scheduleTickDuration = time.Minute
 )
 
-type PartitionScheduler struct {
+type PartitionScheduleTrigger struct {
 	partitions          []PartitionID
 	maxKeepLiveDuration time.Duration
 	observer            *cluster.NodeObserver
 }
 
-func (scheduler *PartitionScheduler) WaitSchedulerTrigger(ctx context.Context) ([]cluster.NodeScheduleEvent, error) {
+func (scheduler *PartitionScheduleTrigger) WaitSchedulerTrigger(ctx context.Context) ([]cluster.NodeSchedule, error) {
 	tk := time.NewTicker(_scheduleTickDuration)
 	for ctx.Err() == nil {
 		select {
@@ -170,7 +177,7 @@ func (scheduler *PartitionScheduler) WaitSchedulerTrigger(ctx context.Context) (
 	return nil, nil
 }
 
-func (scheduler *PartitionScheduler) isHealthNode(n cluster.Node) bool {
+func (scheduler *PartitionScheduleTrigger) isHealthNode(n cluster.Node) bool {
 	return n.LastAvailable > 0 && time.Now().Sub(n.LastKeepLive) < scheduler.maxKeepLiveDuration
 }
 
@@ -182,7 +189,7 @@ type nodeSchedule struct {
 }
 
 
-func (scheduler *PartitionScheduler) schedule(ctx context.Context, group *cluster.NodeGroup) ([]cluster.NodeScheduleEvent, error) {
+func (scheduler *PartitionScheduleTrigger) schedule(ctx context.Context, group *cluster.NodeGroup) ([]cluster.NodeSchedule, error) {
 	//TODO need improve
 
 	parts := scheduler.partitions
@@ -257,7 +264,7 @@ func (scheduler *PartitionScheduler) schedule(ctx context.Context, group *cluste
 		}
 	}
 
-	var events []cluster.NodeScheduleEvent
+	var events []cluster.NodeSchedule
 
 	for _, s := range schedules {
 		if len(s.ExpectUnits) == s.Units.Count() {
@@ -273,10 +280,9 @@ func (scheduler *PartitionScheduler) schedule(ctx context.Context, group *cluste
 			}
 		}
 
-		events = append(events, cluster.NodeScheduleEvent{
-			Schedule: &cluster.NodeSchedule{
-				UpdateUnit: s.ExpectUnits,
-			},
+		events = append(events, cluster.NodeSchedule{
+			NodeID: s.Node.ID,
+			UpdateUnit: s.ExpectUnits,
 		})
 	}
 

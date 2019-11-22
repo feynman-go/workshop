@@ -40,7 +40,7 @@ func (wrapper recordWrapper) PostElection(ctx context.Context, election Election
 }
 
 func (wrapper recordWrapper) KeepLive(ctx context.Context, keepLive KeepLive) (err error) {
-	rd, ctx := wrapper.recorders.ActionRecorder(ctx, "KeepLive")
+	rd, ctx := wrapper.recorders.ActionRecorder(ctx, "SetLiveInfo")
 	defer func() {
 		rd.Commit(err)
 	}()

@@ -105,6 +105,7 @@ func (client *Client) Do(ctx context.Context, operation func(ctx context.Context
 }
 
 
+
 func (client *Client) getPromiseMiddles(opt ActionOption) []promise.Middle {
 	var part int
 	if opt.PartitionID != nil {

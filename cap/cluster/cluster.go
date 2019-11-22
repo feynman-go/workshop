@@ -3,70 +3,77 @@ package cluster
 import (
 	"context"
 	"errors"
-	"fmt"
-	"github.com/feynman-go/workshop/cap/ring"
+	"github.com/feynman-go/workshop/queue"
 	"github.com/feynman-go/workshop/record"
+	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
+	"log"
 	"net/textproto"
 	"sync"
 	"time"
 )
 
-type NodeNotifyQueue interface {
-	WaitNotification(ctx context.Context) ([]NodeNotification, error)
-	PushNodeEvent(ctx context.Context, event NodesEvent) error
+const (
+	_maxNodeEventQueueCount = 16
+)
+
+type NodeMessageQueue interface {
+	WaitMessages(ctx context.Context) ([]NodeMessage, error)
+	PushNodeTransaction(ctx context.Context, transaction Transaction) error
 	Close() error
 }
 
-type NodeNotification struct {
+type NodeMessage struct {
 	Timestamp time.Time
 	Node Node
 }
 
-type NodesEvent struct {
-	Seq   int64
-	Nodes []ring.NodeRangeUpdate
-}
-
 type Cluster struct {
-	ringScheduler   RingScheduler
-	store           RingStore
-	nodeNotifyQueue NodeNotifyQueue
+	nodeNotifyQueue NodeMessageQueue
 	nodeGroupStore  NodeGroupStore
 	records         record.Factory
+	schedulers      Scheduler
+	seq             int64
+	pb              *prob.Prob
+	rw              sync.RWMutex
+	observer        *NodeObserver
 }
 
 func New(
-	scheduler RingScheduler,
 	nodeStore NodeGroupStore,
-	store RingStore,
-	nodeNotifyQueue NodeNotifyQueue,
+	nodeNotifyQueue NodeMessageQueue,
+	schedulers Scheduler,
 	records record.Factory) *Cluster {
 
-	return &Cluster{
-		ringScheduler:   scheduler,
-		store:           store,
+	cluster := &Cluster{
 		records:         records,
 		nodeGroupStore:  nodeStore,
 		nodeNotifyQueue: nodeNotifyQueue,
+		schedulers: schedulers,
+		observer: &NodeObserver {
+			nodeStore: nodeStore,
+			q: &NodeEventQueue{
+				q: queue.NewQueue(_maxNodeEventQueueCount),
+			},
+		},
 	}
+
+	cluster.pb = prob.New(cluster.run)
+	cluster.pb.Start()
+	return cluster
 }
 
-func (cluster *Cluster) runWithContext(ctx context.Context) {
-	for ctx.Err() == nil {
-		err := cluster.waitNodeNotify(ctx)
-		if err != nil {
-			//TODO check error
-		}
-	}
+func (cluster *Cluster) Close() {
+	cluster.pb.Stop()
 }
 
 func (cluster *Cluster) waitNodeNotify(ctx context.Context) error {
-	ntf, err := cluster.nodeNotifyQueue.WaitNotification(ctx)
+	msgs, err := cluster.nodeNotifyQueue.WaitMessages(ctx)
+	log.Println("did receive msgs", msgs, err)
 	if err != nil {
 		return err
 	}
-	if ntf == nil {
+	if len(msgs) == 0 {
 		return nil
 	}
 
@@ -75,129 +82,103 @@ func (cluster *Cluster) waitNodeNotify(ctx context.Context) error {
 		return err
 	}
 
-	var updateNodes []Node
-	for _, n := range ntf {
-		group.UpdateNode(n.Node)
-		updateNodes = append(updateNodes, n.Node)
-	}
-
-	err = cluster.nodeGroupStore.SaveNodes(ctx, updateNodes)
+	events, err := cluster.updateGroupByNodeMessage(ctx, msgs, group)
 	if err != nil {
 		return err
 	}
 
-	err = cluster.schedule(ctx, group)
+	err = cluster.nodeGroupStore.SaveNodes(ctx, group)
 	if err != nil {
 		return err
 	}
 
+	err = cluster.observer.pushEvent(ctx, events)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-func (cluster *Cluster) fetchLastRing(ctx context.Context) (*ring.Ring, error) {
-	r, err := cluster.store.GetRingLastSnapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if r == nil {
-		r = ring.NewRing(nil)
-	}
-
-	return r, nil
-}
-
-func (cluster *Cluster) schedule(ctx context.Context, group *NodeGroup) error {
-	r, err := cluster.fetchLastRing(ctx)
-	if err != nil {
-		return err
-	}
-
-	nodeUpdate, err := cluster.ringScheduler.ScheduleRing(ctx, r, group)
-	if err != nil {
-		return err
-	}
-
-	if nodeUpdate != nil {
-		err = cluster.nodeNotifyQueue.PushNodeEvent(ctx, NodesEvent{
-			Seq:   r.Seq() + 1,
-			Nodes: nodeUpdate,
-		})
-		if err != nil {
-			return err
+func (cluster *Cluster) updateGroupByNodeMessage(ctx context.Context, msgs []NodeMessage, group *NodeGroup) ([]NodeEvent, error) {
+	var events []NodeEvent
+	for _, msg := range msgs {
+		origin, ext := group.GetNodeByID(msg.Node.ID)
+		e := NodeEvent{
+			Seq: 0,
+			Node: msg.Node,
 		}
-		return nil
+		if ext {
+			e.Origin = &origin
+		}
+		events = append(events, e)
+		group.UpdateNode(msg.Node)
 	}
-	return nil
+	return events, nil
 }
+
 
 func (cluster *Cluster) run(ctx context.Context) {
-	tk := time.NewTicker(time.Minute)
-	for ctx.Err() == nil {
-		select {
-		case <- ctx.Done():
-		case <- tk.C:
-			cluster.refreshLastSnapshot(ctx)
-		}
-	}
+	syncrun.RunAsGroup(ctx,
+		syncrun.FuncWithReStart(func(ctx context.Context) bool {
+			cluster.waitNodeNotify(ctx)
+			return true
+		}, syncrun.RandRestart(time.Second, 2 * time.Second)),
+
+		syncrun.FuncWithReStart(func(ctx context.Context) bool {
+			cluster.waitSchedule(ctx)
+			return true
+		}, syncrun.RandRestart(time.Second, 2 * time.Second)),
+	)
 }
 
-func (cluster *Cluster) refreshLastSnapshot(ctx context.Context) {
+
+func (cluster *Cluster) waitSchedule(ctx context.Context) error {
 	var err error
 	if cluster.records != nil {
 		var recorder record.Recorder
-		recorder, ctx = cluster.records.ActionRecorder(ctx, "refreshLastSnapshot")
+		recorder, ctx = cluster.records.ActionRecorder(ctx, "waitSchedule")
 		defer func() {
 			recorder.Commit(err)
 		}()
 	}
 
-	var r *ring.Ring
-	r, err = cluster.fetchLastRing(ctx)
+	scheduler, err := cluster.schedulers.StartSchedule(ctx, cluster.observer)
 	if err != nil {
-		return
-	}
-	err = cluster.store.StoreSnapshot(ctx, r)
-	if err != nil {
-		return
+		return err
 	}
 
-	err = cluster.store.StoreSnapshot(ctx, r)
-	return
+
+	for ctx.Err() == nil {
+		var schedules []NodeSchedule
+		schedules, err = scheduler.WaitSchedulerTrigger(ctx)
+		if err != nil {
+			return err
+		}
+
+		if len(schedules) != 0 {
+			err = cluster.nodeNotifyQueue.PushNodeTransaction(ctx, Transaction{
+				Seq:       cluster.incSeq(),
+				Schedules: schedules,
+			})
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
-type RingStore interface {
-	StoreSnapshot(ctx context.Context, snapshot *ring.Ring) error
-	RingReader
-}
+func (cluster *Cluster) incSeq() int64 {
+	cluster.rw.Lock()
+	defer cluster.rw.Unlock()
 
-
-type NodeAction struct {
-	UnsetNodes []int64
-	SetNodes []Node
-}
-
-type RingEventNotifier interface {
-	WaitRingEvent(ctx context.Context, seq int64) (*RingEvent, error)
-	Close() error
-}
-
-type RingReader interface {
-	GetRingLastSnapshot(ctx context.Context) (*ring.Ring, error)
-}
-
-type RingEvent struct {
-	Seq int64
-	Nodes []ring.RingNode
-}
-
-type Update struct {
-
+	cluster.seq ++
+	return cluster.seq
 }
 
 type NodeGroupStore interface {
 	ReadNodeGroup(ctx context.Context) (*NodeGroup, error)
-	SaveNodes(ctx context.Context, nodes []Node) error
+	SaveNodes(ctx context.Context, group *NodeGroup) error
 }
 
 type NodeGroup struct {
@@ -221,6 +202,11 @@ func (group *NodeGroup) Size() int {
 	return len(group.nodes)
 }
 
+func (group *NodeGroup) GetNodeByID(id string) (Node, bool) {
+	n, ext :=  group.nodes[id]
+	return n, ext
+}
+
 func (group *NodeGroup) UpdateNode(node Node) {
 	if node.ID == "" {
 		return
@@ -236,271 +222,6 @@ func (group *NodeGroup) GetNodes() []Node {
 	return ret
 }
 
-type RingScheduler interface {
-	ScheduleRing(ctx context.Context, ring *ring.Ring, group *NodeGroup) ([]ring.NodeRangeUpdate, error)
-}
-
-type NodeManager struct {
-	rw           sync.RWMutex
-	store        NodeStore
-	expectRange  *KeySet
-	unExpectChan chan struct{}
-}
-
-type NodeSyncEvent struct {
-	Seq   int64
-	Range KeySet
-}
-
-type NodeStore interface {
-	UpdateNode(ctx context.Context, node Node) error
-	GetNode(ctx context.Context) (Node, error)
-}
-
-func NewNodeManager(store NodeStore) *NodeManager {
-	manager := &NodeManager {
-		store: store,
-		unExpectChan: make(chan struct{}, 1),
-	}
-	return manager
-}
-
-func (manager *NodeManager) KeepLive(ctx context.Context, available float64) error {
-	manager.rw.Lock()
-	defer manager.rw.Unlock()
-
-	if available <= 0 {
-		return errors.New("available can not small & equal than zero")
-	}
-
-	node, err := manager.store.GetNode(ctx)
-	if err != nil {
-		return nil
-	}
-
-	if node.LastAvailable < 0 {
-		return errors.New("left cluster")
-	}
-	node.LastAvailable = available
-	node.LastKeepLive = time.Now()
-	node.Seq ++
-
-	return manager.store.UpdateNode(ctx, node)
-}
-
-func (manager *NodeManager) ChangeNodeRange(ctx context.Context, rg KeySet) error {
-	nd, err := manager.store.GetNode(ctx)
-	if err != nil {
-		return fmt.Errorf("store get: %v", err)
-	}
-	nd.LastRange = rg
-	err = manager.store.UpdateNode(ctx, nd)
-	if err != nil {
-		return fmt.Errorf("store update: %v", err)
-	}
-	return err
-}
-
-func (manager *NodeManager) AcceptSyncEvent(event NodeSyncEvent) {
-	manager.rw.Lock()
-	defer manager.rw.Unlock()
-
-	manager.expectRange = &event.Range
-	manager.startTrans()
-	return
-}
-
-func (manager *NodeManager) WaitEventUnexpected(ctx context.Context) (expect KeySet, actual KeySet, err error) {
-	var (
-		node Node
-		expectPtr *KeySet
-	)
-
-	for ctx.Err() == nil {
-		manager.rw.RLock()
-		expectPtr = manager.expectRange
-		manager.rw.RUnlock()
-		node, err = manager.store.GetNode(ctx)
-		if err != nil {
-			err = fmt.Errorf("get node:%v", err)
-			return
-		}
-		if expectPtr != nil && node.LastRange != *expectPtr {
-			expect = *expectPtr
-			actual = node.LastRange
-			return
-		}
-
-		select {
-		case <- manager.unExpectChan:
-		case <- ctx.Done():
-		}
-	}
-	err = ctx.Err()
-	return
-}
-
-func (manager *NodeManager) GetCurrent(ctx context.Context) (Node, error) {
-	manager.rw.RLock()
-	defer manager.rw.RUnlock()
-	nd, err := manager.store.GetNode(ctx)
-	return nd, err
-}
-
-func (manager *NodeManager) LeaveCluster(ctx context.Context) error {
-	manager.rw.Lock()
-	defer manager.rw.Unlock()
-	return manager.KeepLive(ctx, -1)
-}
-
-func (manager *NodeManager) startTrans() {
-	select {
-	case manager.unExpectChan <- struct{}{}:
-	default:
-	}
-}
-
-
-type Router struct {
-	notifier RingEventNotifier
-	reader   RingReader
-	records  record.Factory
-	ring *ring.Ring
-	rw sync.RWMutex
-	pb *prob.Prob
-}
-
-func NewClusterRouter(notifier RingEventNotifier, reader RingReader) *Router {
-	cluster := &Router{
-		notifier: notifier,
-		reader: reader,
-	}
-	cluster.pb = prob.New(cluster.run)
-	cluster.pb.Start()
-	return cluster
-}
-
-func (cluster *Router) GetLastRing(ctx context.Context) (*ring.Ring, error) {
-	r, err := cluster.reader.GetRingLastSnapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r, ctx.Err()
-}
-
-func (cluster *Router) Close() {
-	cluster.pb.Stop()
-}
-
-func (cluster *Router) run(ctx context.Context) {
-	for ctx.Err() == nil {
-		cluster.watchEvent(ctx)
-	}
-	cluster.notifier.Close()
-}
-
-func (cluster *Router) watchEvent(ctx context.Context) {
-	var (
-		err error
-	)
-
-	if cluster.records != nil {
-		var recorder record.Recorder
-		recorder, ctx = cluster.records.ActionRecorder(ctx, "watcher transaction")
-		defer func() {
-			recorder.Commit(err)
-		}()
-	}
-
-	r, err := cluster.GetLastRing(ctx)
-	if err != nil {
-		return
-	}
-
-	cluster.rw.Lock()
-	cluster.ring = r
-	cluster.rw.Unlock()
-
-	for ctx.Err() == nil {
-		var event *RingEvent
-		event, err = cluster.notifier.WaitRingEvent(ctx, r.seq)
-		if err != nil {
-			return
-		}
-		if event != nil {
-			r = r.WithEvent(*event)
-		}
-		cluster.rw.Lock()
-		cluster.ring = r
-		cluster.rw.Unlock()
-	}
-}
-
-type KeyRange struct {
-	Start int64
-	Length int64
-}
-
-func (rg KeyRange) End() int64{
-	return rg.Start + rg.Length
-}
-
-type KeySet []KeyRange
-
-func (rr KeySet) InRange(key int64) bool {
-	// TODO improve search
-	for _, r := range rr{
-		if r.Start <= key && (r.Start + r.Length) > key {
-			return true
-		}
-	}
-	return false
-}
-
-func (rr KeySet) WithKeyRange(insert KeyRange) KeySet {
-	// TODO improve search
-	var (
-		newSet = make([]KeyRange, 0, len(rr) + 1)
-		startIndex = -1
-		endIndex = len(rr)
-	)
-	//copy(newSet, rr)
-
-	var readyInsert = insert
-	for i, r := range rr {
-		if startIndex < 0 && r.Start <= insert.Start {
-			startIndex = i
-		}
-		if insert.End() <= r.End() {
-			endIndex = i
-			break
-		}
-	}
-
-	// 前部的
-	for i := 0; i < startIndex; i++ {
-		newSet = append(newSet, rr[i])
-	}
-
-	// 合并的
-	if startIndex >= 0 && insert.Start > rr[startIndex].Start {
-		readyInsert.Start = rr[startIndex].Start
-	}
-	if endIndex < len(rr) && insert.End() < rr[endIndex].End() {
-		readyInsert.Length = rr[endIndex].End() - readyInsert.Start
-	}
-	newSet = append(newSet, readyInsert)
-
-	// 后部的
-	for i := endIndex + 1; i < len(rr); i++ {
-		newSet = append(newSet, rr[i])
-	}
-	return newSet
-}
-
-func (rr KeySet) WithExcludeKeyRange(insert KeyRange) KeySet {
-
-}
 
 type Node struct {
 	ID            string    `bson:"id"`
@@ -514,6 +235,7 @@ type Node struct {
 type Unit struct {
 	Key string
 	Labels Labels
+	Status int32 // for customer change
 }
 
 type Labels textproto.MIMEHeader
@@ -522,28 +244,267 @@ type UnitSet struct {
 	units map[string]Unit
 }
 
-func (set *UnitSet) Update(key string, unit Unit) {
+func NewUnitSet() *UnitSet {
+	return &UnitSet{
+		units: map[string]Unit{},
+	}
+}
 
+func (set *UnitSet) Update(unit Unit) {
+	set.units[unit.Key] = unit
 }
 
 func (set *UnitSet) Remove(key string) {
-
+	delete(set.units, key)
 }
 
 func (set *UnitSet) Count() int {
-
+	return len(set.units)
 }
 
-func (set *UnitSet) Get(key string) Unit {
+func (set *UnitSet) Get(key string) (Unit, bool) {
+	u, ext :=  set.units[key]
+	return u, ext
+}
 
+func (set *UnitSet) Copy() *UnitSet {
+	newSet := NewUnitSet()
+	for _, u := range set.units {
+		newSet.Update(u)
+	}
+	return newSet
 }
 
 func (set *UnitSet) List() []Unit {
-
+	var ret = make([]Unit, 0, len(set.units))
+	for _, u := range set.units {
+		ret = append(ret, u)
+	}
+	return ret
 }
 
-type RouterIndex interface {
-	UpdateUnit(ctx context.Context, unit ...Unit) error
-	RouteUnit(ctx context.Context, key string) (string, bool)
+type NotificationAcceptor interface {
+	Accept(ctx context.Context, notification NodeMessage) error
+	WaitScheduleTask(ctx context.Context) ([]NodeSchedule, error)
 }
 
+type NodeSchedule struct {
+	NodeID string
+	UpdateUnit []Unit
+	RemoveUnit []string
+}
+
+type NodeScheduleEvent struct {
+	Schedule NodeSchedule
+	Seq int64
+}
+
+type Scheduler interface {
+	StartSchedule(ctx context.Context, observer *NodeObserver) (ScheduleTrigger, error)
+}
+
+type ScheduleTrigger interface {
+	WaitSchedulerTrigger(ctx context.Context) ([]NodeSchedule, error)
+}
+
+type SchedulerFunc func(ctx context.Context) ([]NodeSchedule, error)
+
+func (f SchedulerFunc) WaitSchedulerTrigger(ctx context.Context) ([]NodeSchedule, error) {return f(ctx)}
+
+type NodeObserver struct {
+	nodeStore NodeGroupStore
+	q *NodeEventQueue
+}
+
+func (observer *NodeObserver) GetNodeGroup(ctx context.Context) (*NodeGroup, error) {
+	return observer.nodeStore.ReadNodeGroup(ctx)
+}
+
+func (observer *NodeObserver) GetEventQueue(ctx context.Context) *NodeEventQueue {
+	return observer.q
+}
+
+func (observer *NodeObserver) pushEvent(ctx context.Context, events []NodeEvent) error {
+	for _, e := range events {
+		err := observer.q.push(ctx, e)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type NodeEventQueue struct {
+	q *queue.Queue
+}
+
+func (q *NodeEventQueue) push(ctx context.Context, e NodeEvent) error {
+	return q.q.Push(ctx, e)
+}
+
+func (q *NodeEventQueue) Reset() {
+	q.q.ResetPeeked()
+}
+
+func (q *NodeEventQueue) Peek(ctx context.Context) (*NodeEvent, error) {
+	d, err := q.q.Peek(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if d == nil {
+		return nil, nil
+	}
+	node := d.(NodeEvent)
+	return &node, nil
+}
+
+
+
+type Transaction struct {
+	Seq       int64
+	Schedules []NodeSchedule
+}
+
+type NodeEvent struct {
+	Seq int64
+	Node Node
+	Origin *Node
+}
+
+
+type ScheduleEventQueue interface {
+	WaitEvent(ctx context.Context) (*NodeScheduleEvent, error)
+	Ack(ctx context.Context, node Node) error
+	Close() error
+}
+
+type NodeAgent struct {
+	rw          sync.RWMutex
+	node        Node
+	expectSet   *UnitSet
+	eventStream ScheduleEventQueue
+	cn chan *UnitSet
+}
+
+func NewNodeAgent(store Node, eventStream ScheduleEventQueue) *NodeAgent {
+	manager := &NodeAgent{
+		node:        store,
+		eventStream: eventStream,
+		cn: make(chan *UnitSet, 1),
+	}
+	return manager
+}
+
+func (manager *NodeAgent) SetLiveInfo(ctx context.Context, available float64) error {
+	manager.rw.Lock()
+	defer manager.rw.Unlock()
+
+	if available <= 0 {
+		return errors.New("available can not small & equal than zero")
+	}
+
+	node := &manager.node
+
+	if node.LastAvailable < 0 {
+		return errors.New("left cluster")
+	}
+	node.LastAvailable = available
+	node.LastKeepLive = time.Now()
+	node.Seq ++
+
+	return nil
+}
+
+func (manager *NodeAgent) AddUnits(ctx context.Context, units ...Unit) error {
+	manager.rw.Lock()
+	defer manager.rw.Unlock()
+
+	if manager.node.LastAvailable < 0 {
+		return errors.New("left cluster")
+	}
+
+	for _, u := range units {
+		manager.node.Units.Update(u)
+	}
+	return nil
+}
+
+func (manager *NodeAgent) RemoveUnits(ctx context.Context, keys []string) error {
+	manager.rw.Lock()
+	defer manager.rw.Unlock()
+
+	if manager.node.LastAvailable < 0 {
+		return errors.New("left cluster")
+	}
+
+	for _, key := range keys {
+		manager.node.Units.Remove(key)
+	}
+	return nil
+}
+
+func (manager *NodeAgent) SendCurrentInfo(ctx context.Context) error {
+	nd, err := manager.GetCurrentNode(ctx)
+	if err != nil {
+		return err
+	}
+
+	if nd.LastAvailable < 0 {
+		return errors.New("left cluster")
+	}
+
+	return manager.eventStream.Ack(ctx, nd)
+}
+
+func (manager *NodeAgent) GetCurrentNode(ctx context.Context) (Node, error) {
+	manager.rw.RLock()
+	defer manager.rw.RUnlock()
+	return manager.node, nil
+}
+
+func (manager *NodeAgent) GetCurrentSchedule(ctx context.Context) (expect *UnitSet, err error) {
+	manager.rw.RLock()
+	defer manager.rw.RUnlock()
+	return manager.expectSet.Copy(), nil
+}
+
+func (manager *NodeAgent) SetLeaveCluster(ctx context.Context) error {
+	manager.rw.Lock()
+	defer manager.rw.Unlock()
+	return manager.SetLiveInfo(ctx, -1)
+}
+
+func (manager *NodeAgent) run(ctx context.Context) {
+	for ctx.Err() == nil {
+		evt, err := manager.eventStream.WaitEvent(ctx)
+		if err != nil {
+			log.Println("wait event err:", err)
+			continue
+		}
+		manager.rw.Lock()
+		if manager.expectSet == nil {
+			manager.expectSet = NewUnitSet()
+		}
+		for _, key := range evt.Schedule.RemoveUnit {
+			manager.expectSet.Remove(key)
+		}
+		for _, u := range evt.Schedule.UpdateUnit {
+			manager.expectSet.Update(u)
+		}
+		cp := manager.expectSet.Copy()
+		select {
+		case manager.cn <- cp:
+		default:
+		}
+		manager.rw.Unlock()
+	}
+}
+
+func (manager *NodeAgent) WaitSchedule(ctx context.Context) (expect *UnitSet, err error) {
+	select {
+	case set :=  <- manager.cn:
+		return set, nil
+	case <- ctx.Done():
+		return nil, nil
+	}
+}

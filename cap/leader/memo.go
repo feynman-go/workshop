@@ -11,6 +11,14 @@ type MemoDecider struct {
 	electors map[*MemoElector]bool
 }
 
+func NewMemoDecider() *MemoDecider {
+	return &MemoDecider{
+		electors: map[*MemoElector]bool{},
+	}
+}
+
+
+
 func (decider *MemoDecider) CreateElector() *MemoElector {
 	e := &MemoElector{
 		decider: decider,
@@ -77,12 +85,6 @@ type MemoElector struct {
 	decider *MemoDecider
 	rw sync.RWMutex
 	cn chan Election
-}
-
-func NewMemoDecider() *MemoDecider {
-	return &MemoDecider{
-		electors: map[*MemoElector]bool{},
-	}
 }
 
 func (elector *MemoElector) PostElection(ctx context.Context, election Election) error {
