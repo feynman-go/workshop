@@ -2,6 +2,7 @@ package prob
 
 import (
 	"context"
+	"github.com/feynman-go/workshop/richclose"
 	"github.com/pkg/errors"
 	"sync"
 	"time"
@@ -177,4 +178,16 @@ func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) bool 
 		return res
 	}
 
+}
+
+func WrapCloser(pb *Prob) richclose.WithContextCloser {
+	return closer{pb}
+}
+
+type closer struct {
+	pb *Prob
+}
+
+func (c closer) CloseWithContext(ctx context.Context) error{
+	return c.pb.StopAndWait(ctx)
 }

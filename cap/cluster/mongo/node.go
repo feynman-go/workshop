@@ -3,7 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
-	"github.com/feynman-go/workshop/cap/cluster2"
+	"github.com/feynman-go/workshop/cap/cluster"
 	"github.com/feynman-go/workshop/database/mgo"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/pkg/errors"

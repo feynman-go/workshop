@@ -3,16 +3,24 @@ package mgo
 import (
 	"context"
 	"fmt"
+	"github.com/feynman-go/workshop/breaker"
 	"github.com/feynman-go/workshop/client"
+	"github.com/feynman-go/workshop/client/richclient"
+	"github.com/feynman-go/workshop/health"
+	"github.com/feynman-go/workshop/health/healthbreak"
 	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/record"
+	"github.com/feynman-go/workshop/richclose"
+	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/time/rate"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"go.uber.org/zap"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -21,7 +29,7 @@ const (
 
 type DbAgent interface {
 	GetDB(ctx context.Context) (db *mongo.Database, err error)
-	client.Recoverable
+	GetBreaker() *breaker.Breaker
 	client.Agent
 }
 
@@ -29,21 +37,16 @@ type DbClient struct {
 	clt *client.Client
 	dbAgent DbAgent
 	mx *mutex.Mutex
-	inited bool
+	reporterCloser richclose.WithContextCloser
 }
 
 type Option struct {
 	Parallel *int
 	Record *record.Factory
-	Breaker *BreakerOption
+	StatusReporter *health.StatusReporter
 	ClientMiddles []client.DoMiddle
 }
 
-type BreakerOption struct {
-	AbnormalLimiter *rate.Limiter
-	RecoveryWaitMax time.Duration
-	RecoveryWaitMin time.Duration
-}
 
 func (opt Option) SetParallel(parallel int) Option {
 	opt.Parallel = &parallel
@@ -55,14 +58,11 @@ func (opt Option) SetRecorder(recorders record.Factory) Option {
 	return opt
 }
 
-func (opt Option) SetBreaker(abnormalLimiter *rate.Limiter, recoveryWaitMax time.Duration, recoveryWaitMin time.Duration) Option {
-	opt.Breaker = &BreakerOption{
-		AbnormalLimiter: abnormalLimiter,
-		RecoveryWaitMax: recoveryWaitMax,
-		RecoveryWaitMin: recoveryWaitMin,
-	}
+func (opt Option) SetStatusReporter(reporter *health.StatusReporter) Option {
+	opt.StatusReporter = reporter
 	return opt
 }
+
 
 func (opt Option) AddClientMid(mid client.DoMiddle) Option {
 	opt.ClientMiddles = append(opt.ClientMiddles, mid)
@@ -70,10 +70,15 @@ func (opt Option) AddClientMid(mid client.DoMiddle) Option {
 }
 
 func New(agent DbAgent, option Option) *DbClient {
+	var closer richclose.WithContextCloser
+	if bk := agent.GetBreaker(); bk != nil && option.StatusReporter != nil {
+		closer = healthbreak.StartBreakerReport(bk, option.StatusReporter)
+	}
 	return &DbClient{
 		clt: client.New(agent, buildClientOption(option, agent)),
 		dbAgent: agent,
 		mx: &mutex.Mutex{},
+		reporterCloser: closer,
 	}
 }
 
@@ -87,17 +92,12 @@ func buildClientOption(opt Option, agent DbAgent) client.Option {
 	}
 
 	if opt.Record != nil {
-		mids = append(mids, client.NewRecorderMiddle(*opt.Record))
+		mids = append(mids, richclient.NewRecorderMiddle(*opt.Record))
 	}
 
-	if opt.Breaker != nil {
-		breakerMid := client.NewBasicBreakerMiddle(
-			opt.Breaker.AbnormalLimiter,
-			agent,
-			opt.Breaker.RecoveryWaitMin,
-			opt.Breaker.RecoveryWaitMax,
-			)
-		mids = append(mids, breakerMid)
+	bk := agent.GetBreaker()
+	if bk != nil {
+		mids = append(mids, richclient.NewBreakerMiddle(bk))
 	}
 
 	cltOpt = cltOpt.AddMiddle(mids...)
@@ -129,24 +129,12 @@ func (mgo *DbClient) Do(ctx context.Context, action func(ctx context.Context, db
 		if !mgo.mx.HoldForRead(ctx) {
 			return ctx.Err()
 		}
-		inited := mgo.inited
-		mgo.mx.ReleaseForRead()
-		if !inited {
-			if mgo.mx.Hold(ctx) {
-				if !mgo.inited {
-					err := mgo.dbAgent.TryRecovery(ctx)
-					if err != nil {
-						mgo.mx.Release()
-						return fmt.Errorf("init db agent err: %v", err)
-					}
-				}
-				mgo.inited = true
-				mgo.mx.Release()
-			}
-		}
 		db, err := ag.GetDB(ctx)
 		if err != nil {
 			return err
+		}
+		if db == nil {
+			return errors.New("no db")
 		}
 		return action(ctx, db)
 	}, )
@@ -165,7 +153,11 @@ func (mgo *DbClient) DoWithPartition(ctx context.Context, part int, action func(
 }
 
 func (mgo *DbClient) CloseWithContext(ctx context.Context) error {
-	return mgo.clt.CloseWithContext(ctx)
+	err := mgo.clt.CloseWithContext(ctx)
+	if err == nil {
+		err = mgo.reporterCloser.CloseWithContext(ctx)
+	}
+	return err
 }
 
 
@@ -291,7 +283,7 @@ func (mgo *DbClient) HandleColChangeStream(ctx context.Context, query ChangeStre
 				break
 			}
 		}
-		return err
+		return ctx.Err()
 	})
 }
 
@@ -302,6 +294,10 @@ type majorAgent struct {
 	db     *mongo.Database
 	option SingleOption
 	cltOpt client.Option
+	pb *prob.Prob
+	bk *breaker.Breaker
+	logger *zap.Logger
+	rw sync.RWMutex
 }
 
 type SingleOption struct {
@@ -315,47 +311,24 @@ func NewSingleAgent(option SingleOption) (DbAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &majorAgent{
+	agent := &majorAgent{
 		option: option,
-	}, nil
+		bk: breaker.New(false),
+	}
+	agent.pb = prob.New(agent.run)
+	agent.pb.Start()
+	return agent, nil
 }
 
-func (agent *majorAgent) refreshClientDatabase(ctx context.Context) error {
-	if agent.db != nil {
-		agent.db.Client().Disconnect(ctx)
-	}
-
-	clt, err := mongo.NewClient(agent.option.ClientOptions)
-	if err != nil {
-		return err
-	}
-
-	err = clt.Connect(ctx)
-	if err != nil {
-		return err
-	}
-
-	dbOpt := options.Database()
-	db := clt.Database(agent.option.Database, dbOpt)
-
-	agent.db = db
-	return nil
-}
-
-func (agent *majorAgent) setUpClientOption(opt SingleOption) {
-	cltOpt := &client.Option{}
-	if opt.Parallel != 0 {
-		cltOpt.SetParallelCount(opt.Parallel)
-	}
-}
 
 func (agent *majorAgent) GetDB(ctx context.Context) (db *mongo.Database, err error) {
 	return agent.db, nil
 }
 
-func (agent *majorAgent) TryRecovery(ctx context.Context) error {
-	return agent.refreshClientDatabase(ctx)
+func (agent *majorAgent) GetBreaker() *breaker.Breaker {
+	return agent.bk
 }
+
 
 func (agent *majorAgent) CloseWithContext(ctx context.Context) error {
 	clt := agent.db.Client()
@@ -365,4 +338,49 @@ func (agent *majorAgent) CloseWithContext(ctx context.Context) error {
 
 func (agent *majorAgent) ClientOption() client.Option {
 	return agent.cltOpt
+}
+
+func (agent *majorAgent) run(ctx context.Context) {
+	timer := time.NewTimer(0)
+	for ctx.Err() == nil {
+		select {
+		case <- timer.C:
+			if agent.client == nil {
+				clt, err := mongo.NewClient(agent.option.ClientOptions)
+				if err != nil {
+					agent.logger.Error("new client", zap.Error(err))
+					agent.bk.Off(err.Error())
+					timer.Reset(3 * time.Second)
+					continue
+				}
+				agent.rw.Lock()
+				agent.client = clt
+				dbOpt := options.Database()
+				agent.db = agent.client.Database(agent.option.Database, dbOpt)
+				agent.rw.Unlock()
+			}
+
+			pingCtx , _ := context.WithTimeout(ctx, 3 * time.Second)
+			err := agent.client.Ping(pingCtx, readpref.Primary())
+			if err != nil {
+				agent.logger.Error("ping", zap.Error(err))
+				agent.bk.Off(err.Error())
+				agent.rw.Lock()
+				agent.client.Disconnect(ctx)
+				agent.client = nil
+				agent.db = nil
+				agent.rw.Unlock()
+				timer.Reset(3 * time.Second)
+				continue
+			}
+			agent.bk.On("ping success")
+			timer.Reset(30 * time.Second)
+		case <- ctx.Done():
+		}
+	}
+
+	if agent.client != nil {
+		closeCtx , _ := context.WithTimeout(context.Background(), 3 * time.Second)
+		agent.client.Disconnect(closeCtx)
+	}
 }

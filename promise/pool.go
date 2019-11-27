@@ -152,6 +152,7 @@ func (w *worker) run() (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			debug.PrintStack()
+			log.Println("recover from:", r)
 			err = fmt.Errorf("recove from %v", r)
 			return
 		}

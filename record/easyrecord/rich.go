@@ -22,12 +22,9 @@ func EasyRecorders(desc string, factory ...record.Factory) record.Factory {
 
 type easyRecordKey struct {}
 
-func RecordsFromContext(ctx context.Context, dft record.Factory) record.Factory {
+func RecordsFromContext(ctx context.Context) record.Factory {
 	v := ctx.Value(easyRecordKey{})
 	records, _ := v.(record.Factory)
-	if records == nil {
-		records = dft
-	}
 	return records
 }
 
@@ -35,14 +32,50 @@ func ContextWithRecords(ctx context.Context, factory record.Factory) context.Con
 	return context.WithValue(ctx, easyRecordKey{}, factory)
 }
 
+// help function
+func DoWithRecords(ctx context.Context, do func(ctx context.Context) error, factory record.Factory, actionName string,  field ...record.Field) error {
+	var (
+		err error
+		r record.Recorder
+	)
+	r, ctx = factory.ActionRecorder(ctx, actionName, field...)
+	defer func() {
+		r.Commit(err)
+	}()
+
+	err = do(ctx)
+	return err
+}
+
+func DoWithContextRecords(ctx context.Context, do func(ctx context.Context) error, actionName string, field ...record.Field) error {
+	var (
+		err error
+		r record.Recorder
+	)
+
+	factory := RecordsFromContext(ctx)
+	if factory != nil {
+		r, ctx = factory.ActionRecorder(ctx, actionName, field...)
+		defer func() {
+			r.Commit(err)
+		}()
+	}
+
+	err = do(ctx)
+	return err
+}
+
+
 type wrapperEasy struct {
 	f record.Factory
 }
 
 func (easy wrapperEasy) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
-	if RecordsFromContext(ctx, nil) == nil {
-		ctx = ContextWithRecords(ctx, easy.f)
+	var f = easy.f
+	if f == nil {
+		f = RecordsFromContext(ctx)
 	}
+	ctx = ContextWithRecords(ctx, f)
 	return easy.f.ActionRecorder(ctx, name, fields...)
 }
 
@@ -136,19 +169,41 @@ func (factory *LoggerFactory) ActionRecorder(ctx context.Context, name string, f
 			)
 		}
 	}
-	if factory.logger == nil && zap.L() == nil {
+
+	var logger = factory.logger
+	if logger == nil {
+		logger = ExtraLoggerFromContext(ctx)
+	}
+	if logger == nil {
+		logger = zap.L()
+	}
+	if logger == nil {
 		return skipRecorder{}, ctx
 	}
 	return LoggerRecorder{
 		fields:  fields,
-		factory: factory,
+		logger: logger,
 		startTime: time.Now(),
 		name: name,
+		desc: factory.desc,
 	}, ctx
 }
 
-func (factory *LoggerFactory) commit(name string, startTime time.Time, err error, fields []record.Field) {
-	logger := factory.logger
+
+type LoggerRecorder struct {
+	fields []record.Field
+	logger *zap.Logger
+	startTime time.Time
+	name string
+	desc string
+}
+
+func (recorder LoggerRecorder) Commit(err error, fields ...record.Field) {
+	recorder.commit(recorder.name, recorder.startTime, err, append(recorder.fields, fields...))
+}
+
+func (recorder LoggerRecorder) commit(name string, startTime time.Time, err error, fields []record.Field) {
+	logger := recorder.logger
 	if logger == nil {
 		logger = zap.L()
 	}
@@ -174,22 +229,12 @@ func (factory *LoggerFactory) commit(name string, startTime time.Time, err error
 	}
 
 	if err == nil {
-		logger.Info(factory.desc, fs...)
+		logger.Info(recorder.desc, fs...)
 	} else {
-		logger.Error(factory.desc, fs...)
+		logger.Error(recorder.desc, fs...)
 	}
 }
 
-type LoggerRecorder struct {
-	fields []record.Field
-	factory *LoggerFactory
-	startTime time.Time
-	name string
-}
-
-func (recorder LoggerRecorder) Commit(err error, fields ...record.Field) {
-	recorder.factory.commit(recorder.name, recorder.startTime, err, append(recorder.fields, fields...))
-}
 
 type TracerFactory struct {
 	tracer opentracing.Tracer
@@ -239,3 +284,25 @@ func (recorder TracerRecorder) Commit(err error, fields ...record.Field) {
 
 type skipRecorder struct {}
 func (recorder skipRecorder) Commit(err error, fields ...record.Field) {}
+
+
+// help
+
+func ContextWithLogger(ctx context.Context, logger *zap.Logger) context.Context{
+	return context.WithValue(ctx, zapLogKey{}, logger)
+}
+
+func ExtraLoggerFromContext(ctx context.Context) *zap.Logger{
+	v := ctx.Value(zapLogKey{})
+	logger, _ :=  v.(*zap.Logger)
+	if logger == nil {
+		logger = zap.L()
+	}
+	return logger
+}
+
+
+type zapLogKey struct {}
+
+
+

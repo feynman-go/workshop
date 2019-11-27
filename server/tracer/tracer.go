@@ -2,51 +2,103 @@ package tracer
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"errors"
+	"fmt"
+	"github.com/feynman-go/workshop/healthcheck"
 	opentracingHttp "github.com/opentracing-contrib/go-stdlib/nethttp"
 	"github.com/opentracing/opentracing-go"
 	"github.com/uber/jaeger-client-go"
 	jaeger_config "github.com/uber/jaeger-client-go/config"
 	"go.uber.org/zap"
+	"io"
 	"net/http"
+	"sync"
 )
 
 
 type Tracer struct {
-	pb *prob.Prob
 	config *jaeger_config.Configuration
 	serviceName string
 	logger *zap.Logger
+	reporter *health.StatusReporter
+	closer io.Closer
+	rw sync.RWMutex
 }
 
-func TracerFromEnv(serviceName string, logger *zap.Logger) *Tracer {
+func TracerFromEnv(serviceName string, logger *zap.Logger, reporter *health.StatusReporter) *Tracer {
 	config, _ := jaeger_config.FromEnv()
-	tracer := &Tracer{
+	tracer := &Tracer {
 		config: config,
 		serviceName: serviceName,
 		logger: logger,
+		reporter: reporter,
 	}
-	tracer.pb = prob.New(tracer.run)
-
+	return tracer
 }
 
-func (tracer *Tracer) Start() {
-	tracer.pb.Start()
+func (tracer *Tracer) Start(ctx context.Context) error {
+	tracer.rw.Lock()
+	defer tracer.rw.Unlock()
+
+	if tracer.config == nil {
+		tracer.reporter.ReportStatus("empty config", health.StatusFatal)
+		return errors.New("tracer config is nil")
+	}
+
+	if tracer.closer != nil {
+		closer, err := tracer.config.InitGlobalTracer(tracer.serviceName, jaeger_config.Logger(jaeger.StdLogger))
+		if err != nil {
+			err = fmt.Errorf("init tracer: %w", err)
+			tracer.reporter.ReportStatus(err.Error(), health.StatusFatal)
+			return err
+		}
+		tracer.closer = closer
+		tracer.reporter.ReportStatus("up", health.StatusOk)
+	}
+
+	return nil
 }
 
 func (tracer *Tracer) CloseWithContext(ctx context.Context) error {
-	return tracer.pb.StopAndWait(ctx)
+	tracer.rw.Lock()
+	defer tracer.rw.Unlock()
+	if tracer.closer != nil {
+		if tracer.reporter != nil {
+			tracer.reporter.ReportStatus("down", health.StatusDown)
+		}
+		return tracer.closer.Close()
+	}
+	return nil
 }
 
 
 func (tracer *Tracer) run(ctx context.Context) {
+	var err error
+	func() {
+		var (
+			detail = "context down"
+			statusCode = health.StatusDown
+		)
+		if err != nil {
+			detail = err.Error()
+			statusCode = health.StatusFatal
+			tracer.logger.Error("run tracer", zap.Error(err))
+		}
+		defer tracer.reporter.ReportStatus(detail, statusCode)
+	}()
+
+	var (
+		closer io.Closer
+	)
+
 	if tracer.config == nil {
 		tracer.logger.Warn("tracer config is nil")
 		return
 	}
-	closer, err := tracer.config.InitGlobalTracer(tracer.serviceName, jaeger_config.Logger(jaeger.StdLogger))
+	closer, err = tracer.config.InitGlobalTracer(tracer.serviceName, jaeger_config.Logger(jaeger.StdLogger))
 	if err != nil {
-		tracer.logger.Error("InitGlobalTracer err", zap.Error(err))
+
+		err = fmt.Errorf("init tracer: %w", err)
 		return
 	}
 
