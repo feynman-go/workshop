@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/feynman-go/workshop/healthcheck"
+	"github.com/feynman-go/workshop/health"
 	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"go.uber.org/zap"
@@ -62,6 +62,7 @@ func (r *GrpcLauncher) runLoop(ctx context.Context) {
 				r.server.GracefulStop()
 			}
 		}(runCtx)
+		r.reportStatus("start serve", health.StatusUp)
 		err = r.server.Serve(lis)
 		r.logger.Error("server serve return", zap.Error(err))
 		r.reportStatus(fmt.Sprintf("serve stoped: %v", err), health.StatusFatal)

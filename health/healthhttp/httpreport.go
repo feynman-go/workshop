@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/feynman-go/workshop/health"
-	"github.com/feynman-go/workshop/healthcheck"
 	"go.uber.org/zap"
 	"net/http"
 )
@@ -50,11 +49,13 @@ func BuildHttpEndpoints(manager *health.HealthManager, endpoints Endpoints, logg
 	mx.HandleFunc(endpoints.Available, func(w http.ResponseWriter, r *http.Request) {
 		if !manager.IsUp() {
 			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("not up"))
 			return
 		}
 		report, err := manager.GetReport()
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(err.Error()))
 			return
 		}
 
@@ -74,6 +75,6 @@ func BuildHttpEndpoints(manager *health.HealthManager, endpoints Endpoints, logg
 		return
 	})
 
-
+	return mx
 }
 

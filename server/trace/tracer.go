@@ -1,10 +1,10 @@
-package tracer
+package trace
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/feynman-go/workshop/healthcheck"
+	"github.com/feynman-go/workshop/health"
 	opentracingHttp "github.com/opentracing-contrib/go-stdlib/nethttp"
 	"github.com/opentracing/opentracing-go"
 	"github.com/uber/jaeger-client-go"
@@ -45,7 +45,7 @@ func (tracer *Tracer) Start(ctx context.Context) error {
 		return errors.New("tracer config is nil")
 	}
 
-	if tracer.closer != nil {
+	if tracer.closer == nil {
 		closer, err := tracer.config.InitGlobalTracer(tracer.serviceName, jaeger_config.Logger(jaeger.StdLogger))
 		if err != nil {
 			err = fmt.Errorf("init tracer: %w", err)

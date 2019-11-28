@@ -78,6 +78,7 @@ func (sc StatusCode) String() string {
 	case StatusOk:
 		return "ok"
 	case StatusWarning:
+		return "warning"
 	default:
 		return "unknown"
 	}
@@ -88,7 +89,7 @@ type CheckRecord struct {
 	CheckTime time.Time `json:"check_time"`
 	CheckDuration time.Duration `json:"check_duration"`
 	CheckDetail string `json:"check_detail"`
-	SelfUpload bool `json:"self_uplod"`
+	SelfUpload bool `json:"self_upload"`
 }
 
 func (record CheckRecord) IsBadStatus() bool {
@@ -310,9 +311,9 @@ func (manager *HealthManager) GetReport() (Report, error) {
 
 
 func (manager *HealthManager) appendReport(plan CheckerPlan, info CheckInfo, report *Report) {
-	if plan.DeepInterval != 0 && time.Now().Sub(info.Record.CheckTime) > 2 * plan.DeepInterval {
+	/*if plan.DeepInterval != 0 && time.Now().Sub(info.Record.CheckTime) > 2 * plan.DeepInterval {
 		info.Record.Status = append(info.Record.Status, StatusBadInterval)
-	}
+	}*/
 	switch info.Desc.Type {
 	case TypeInternal:
 		report.Internal = append(report.Internal, info)
@@ -343,8 +344,8 @@ var DefaultCheckPlan = CheckerPlan{
 	DeepPercent:     float32(0.2),
 	DeepInterval:    10 * time.Second,
 	ShallowInterval: 10 * time.Second,
-	DeepDuration:    10 * time.Second,
-	ShallowDuration: 10 * time.Second,
+	DeepDuration:    0,
+	ShallowDuration: 0,
 }
 
 type Report struct {

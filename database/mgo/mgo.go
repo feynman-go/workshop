@@ -17,7 +17,9 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	"go.uber.org/zap"
 	"runtime"
 	"sync"
@@ -53,6 +55,7 @@ func (opt Option) SetParallel(parallel int) Option {
 	return opt
 }
 
+// if not set, use context record
 func (opt Option) SetRecorder(recorders record.Factory) Option {
 	opt.Record = &recorders
 	return opt
@@ -93,6 +96,8 @@ func buildClientOption(opt Option, agent DbAgent) client.Option {
 
 	if opt.Record != nil {
 		mids = append(mids, richclient.NewRecorderMiddle(*opt.Record))
+	} else {
+		mids = append(mids, richclient.NewRecorderMiddle(nil))
 	}
 
 	bk := agent.GetBreaker()
@@ -105,14 +110,35 @@ func buildClientOption(opt Option, agent DbAgent) client.Option {
 }
 
 type DoOption struct {
+	Name string
 	PartID *int
 }
 
-func (option *DoOption) SetPartition(partID int) {
+func (option DoOption) SetPartition(partID int) DoOption {
 	option.PartID = &partID
+	return option
 }
 
-func (mgo *DbClient) LongTimeDo(ctx context.Context, action func(ctx context.Context, db *mongo.Database) error) error {
+func (option DoOption) SetName(name string) DoOption {
+	option.Name = name
+	return option
+}
+
+func (option DoOption) buildClientOption() client.ActionOption {
+	opt := client.ActionOption{}
+	if name := option.Name; name != "" {
+		opt = opt.SetName(name)
+	}
+
+	if pp := option.PartID; pp != nil {
+		opt = opt.SetPartition(*pp)
+	}
+	return opt
+}
+
+func (mgo *DbClient) LongTimeDo(ctx context.Context, action func(ctx context.Context, db *mongo.Database) error, options ...DoOption) error {
+	opts := mgo.buildClientOption(options)
+	opts = append(opts, client.ActionOption{}.SetAlone(true))
 	return mgo.clt.Do(ctx, func(ctx context.Context, agent client.Agent) error {
 		ag := agent.(DbAgent)
 		db, err := ag.GetDB(ctx)
@@ -120,15 +146,13 @@ func (mgo *DbClient) LongTimeDo(ctx context.Context, action func(ctx context.Con
 			return err
 		}
 		return action(ctx, db)
-	}, client.ActionOption{}.SetAlone(true))
+	}, opts...)
 }
 
-func (mgo *DbClient) Do(ctx context.Context, action func(ctx context.Context, db *mongo.Database) error) error {
+func (mgo *DbClient) Do(ctx context.Context, action func(ctx context.Context, db *mongo.Database) error, options ...DoOption) error {
+
 	return mgo.clt.Do(ctx, func(ctx context.Context, agent client.Agent) error {
 		ag := agent.(DbAgent)
-		if !mgo.mx.HoldForRead(ctx) {
-			return ctx.Err()
-		}
 		db, err := ag.GetDB(ctx)
 		if err != nil {
 			return err
@@ -137,19 +161,7 @@ func (mgo *DbClient) Do(ctx context.Context, action func(ctx context.Context, db
 			return errors.New("no db")
 		}
 		return action(ctx, db)
-	}, )
-}
-
-func (mgo *DbClient) DoWithPartition(ctx context.Context, part int, action func(ctx context.Context, db *mongo.Database) error) error {
-	actionOpt := client.ActionOption{}.SetPartition(part)
-	return mgo.clt.Do(ctx, func(ctx context.Context, agent client.Agent) error {
-		ag := agent.(DbAgent)
-		db, err := ag.GetDB(ctx)
-		if err != nil {
-			return err
-		}
-		return action(ctx, db)
-	}, actionOpt)
+	}, mgo.buildClientOption(options)...)
 }
 
 func (mgo *DbClient) CloseWithContext(ctx context.Context) error {
@@ -158,6 +170,14 @@ func (mgo *DbClient) CloseWithContext(ctx context.Context) error {
 		err = mgo.reporterCloser.CloseWithContext(ctx)
 	}
 	return err
+}
+
+func (mgo *DbClient) buildClientOption(options []DoOption) []client.ActionOption {
+	var opts = make([]client.ActionOption, 0, len(options))
+	for _, o := range options {
+		opts = append(opts, o.buildClientOption())
+	}
+	return opts
 }
 
 
@@ -292,6 +312,7 @@ func (mgo *DbClient) HandleColChangeStream(ctx context.Context, query ChangeStre
 type majorAgent struct {
 	client *mongo.Client
 	db     *mongo.Database
+	dbOpt *options.DatabaseOptions
 	option SingleOption
 	cltOpt client.Option
 	pb *prob.Prob
@@ -306,14 +327,21 @@ type SingleOption struct {
 	Database string
 }
 
-func NewSingleAgent(option SingleOption) (DbAgent, error) {
+func NewMajorAgent(option SingleOption, logger *zap.Logger) (DbAgent, error) {
 	_, err := mongo.NewClient(option.ClientOptions) // try new client
 	if err != nil {
 		return nil, err
 	}
+
+	dbOpt := options.Database().
+		SetReadConcern(readconcern.Majority()).
+		SetWriteConcern(writeconcern.New(writeconcern.WMajority()))
+
 	agent := &majorAgent{
+		dbOpt: dbOpt,
 		option: option,
 		bk: breaker.New(false),
+		logger: logger,
 	}
 	agent.pb = prob.New(agent.run)
 	agent.pb.Start()
@@ -322,6 +350,8 @@ func NewSingleAgent(option SingleOption) (DbAgent, error) {
 
 
 func (agent *majorAgent) GetDB(ctx context.Context) (db *mongo.Database, err error) {
+	agent.rw.RLock()
+	defer agent.rw.RUnlock()
 	return agent.db, nil
 }
 
@@ -353,9 +383,19 @@ func (agent *majorAgent) run(ctx context.Context) {
 					timer.Reset(3 * time.Second)
 					continue
 				}
+				err = clt.Connect(ctx)
+				if err != nil {
+					agent.logger.Error("db connect", zap.Error(err))
+					agent.bk.Off(err.Error())
+					timer.Reset(3 * time.Second)
+					continue
+				}
 				agent.rw.Lock()
 				agent.client = clt
-				dbOpt := options.Database()
+				dbOpt := agent.dbOpt
+				if dbOpt == nil {
+					dbOpt = options.Database()
+				}
 				agent.db = agent.client.Database(agent.option.Database, dbOpt)
 				agent.rw.Unlock()
 			}

@@ -106,7 +106,7 @@ func (md *recorderMiddle) WrapDo(f func(ctx context.Context, agent client.Agent)
 	return func(ctx context.Context, agent client.Agent) (err error) {
 		var records record.Factory
 		if md.factory == nil {
-			records = easyrecord.RecordsFromContext(ctx)
+			records = easyrecord.ExtraFromContext(ctx)
 		}
 		if records != nil && opt.Name != "" {
 			var recorder record.Recorder
@@ -115,7 +115,6 @@ func (md *recorderMiddle) WrapDo(f func(ctx context.Context, agent client.Agent)
 				recorder.Commit(err)
 			}()
 		}
-
 		err = f(ctx, agent)
 		return err
 	}

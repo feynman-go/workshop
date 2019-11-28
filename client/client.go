@@ -133,6 +133,12 @@ func (opt ActionOption) SetAlone(alone bool) ActionOption {
 	return opt
 }
 
+func (opt ActionOption) SetName(name string) ActionOption {
+	opt.Name = name
+	return opt
+}
+
+
 func mergeActionOption(actOption []ActionOption) ActionOption {
 	opt := ActionOption{}
 	for _, a := range actOption {

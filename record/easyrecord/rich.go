@@ -13,24 +13,28 @@ import (
 
 func EasyRecorders(desc string, factory ...record.Factory) record.Factory {
 	fs := []record.Factory{}
-	fs = append(fs, NewTracerFactory(nil))
-	fs = append(fs, NewLoggerRecorderFactory(nil, desc))
-	fs = append(fs, NewPromRecorderFactory(desc))
+	fs = append(fs, contextRecords{tracerRecordersKey{}, NewTracerFactory(nil)})
+	fs = append(fs, contextRecords{loggerRecordersKey{}, NewLoggerRecorderFactory(nil, desc)})
+	fs = append(fs, contextRecords{promRecordersKey{}, NewPromRecorderFactory(desc)})
 	fs = append(fs, factory...)
-	return wrapperEasy{record.ChainFactory(fs...)}
+	return contextRecords{easyRecordersKey{}, record.ChainFactory(fs...)}
 }
 
-type easyRecordKey struct {}
+type easyRecordersKey struct {}
+type tracerRecordersKey struct {}
+type loggerRecordersKey struct {}
+type promRecordersKey struct {}
 
-func RecordsFromContext(ctx context.Context) record.Factory {
-	v := ctx.Value(easyRecordKey{})
+func ExtraFromContext(ctx context.Context) record.Factory {
+	v := ctx.Value(easyRecordersKey{})
 	records, _ := v.(record.Factory)
 	return records
 }
 
-func ContextWithRecords(ctx context.Context, factory record.Factory) context.Context {
-	return context.WithValue(ctx, easyRecordKey{}, factory)
+func SetToContext(ctx context.Context, factory record.Factory) context.Context {
+	return context.WithValue(ctx, easyRecordersKey{}, factory)
 }
+
 
 // help function
 func DoWithRecords(ctx context.Context, do func(ctx context.Context) error, factory record.Factory, actionName string,  field ...record.Field) error {
@@ -53,7 +57,7 @@ func DoWithContextRecords(ctx context.Context, do func(ctx context.Context) erro
 		r record.Recorder
 	)
 
-	factory := RecordsFromContext(ctx)
+	factory := ExtraFromContext(ctx)
 	if factory != nil {
 		r, ctx = factory.ActionRecorder(ctx, actionName, field...)
 		defer func() {
@@ -66,17 +70,20 @@ func DoWithContextRecords(ctx context.Context, do func(ctx context.Context) erro
 }
 
 
-type wrapperEasy struct {
+type contextRecords struct {
+	key interface{}
 	f record.Factory
 }
 
-func (easy wrapperEasy) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
-	var f = easy.f
+func (records contextRecords) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
+	var f = records.f
 	if f == nil {
-		f = RecordsFromContext(ctx)
+		v := ctx.Value(records.key)
+		f = v.(record.Factory)
+	} else {
+		ctx = context.WithValue(ctx, records.key, f)
 	}
-	ctx = ContextWithRecords(ctx, f)
-	return easy.f.ActionRecorder(ctx, name, fields...)
+	return f.ActionRecorder(ctx, name, fields...)
 }
 
 
@@ -303,6 +310,3 @@ func ExtraLoggerFromContext(ctx context.Context) *zap.Logger{
 
 
 type zapLogKey struct {}
-
-
-

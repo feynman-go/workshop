@@ -2,7 +2,7 @@ package prom
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/healthcheck"
+	"github.com/feynman-go/workshop/health"
 	"github.com/feynman-go/workshop/server/httpsrv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
@@ -21,9 +21,17 @@ type Instance struct {
 	srv *httpsrv.Launcher
 }
 
-func New(exportAddr string, exportPath string, logger *zap.Logger, healthReporter *health.StatusReporter) *Instance {
+type InstanceOption struct {
+	Logger *zap.Logger
+	HealthReporter *health.StatusReporter
+}
+
+func New(exportAddr string, exportPath string, option InstanceOption) *Instance {
+	if option.Logger == nil {
+		option.Logger = zap.L()
+	}
 	ins := &Instance{
-		exportPath, exportAddr, logger, nil,
+		exportPath, exportAddr, option.Logger, nil,
 	}
 
 	sm := http.NewServeMux()
@@ -32,7 +40,12 @@ func New(exportAddr string, exportPath string, logger *zap.Logger, healthReporte
 	srv := httpsrv.New(&http.Server{
 		Addr:    ins.exportAddr,
 		Handler: sm,
-	}, ins.logger, _promCloseDuration, healthReporter)
+	}, httpsrv.LaunchOption{
+		ServerName:     "prom",
+		CloseDuration:  _promCloseDuration,
+		Logger:         option.Logger,
+		HealthReporter: option.HealthReporter,
+	})
 
 	ins.srv = srv
 	return ins
