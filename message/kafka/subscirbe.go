@@ -3,11 +3,16 @@ package kafka
 import (
 	"context"
 	"github.com/feynman-go/workshop/client"
+	"github.com/feynman-go/workshop/client/richclient"
+	"github.com/feynman-go/workshop/health"
 	"github.com/feynman-go/workshop/message"
 	"github.com/feynman-go/workshop/mutex"
+	"github.com/feynman-go/workshop/record"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"github.com/pkg/errors"
 	"github.com/segmentio/kafka-go"
+	"golang.org/x/time/rate"
+	"time"
 )
 
 const (
@@ -19,10 +24,18 @@ type SubscribeOption struct {
 	Topic   *string
 	GroupID *string
 	PartitionID int64
+	Records record.Factory
+	Reporter *health.StatusReporter
+	Limiter *rate.Limiter
 }
 
 func (option SubscribeOption) AddAddr(addr ...string) SubscribeOption {
 	option.Addr = append(option.Addr, addr...)
+	return option
+}
+
+func (option SubscribeOption) SetLimiter(limiter rate.Limit) SubscribeOption {
+	option.Limiter = rate.NewLimiter(limiter, 1)
 	return option
 }
 
@@ -36,6 +49,16 @@ func (option SubscribeOption) SetTopic(topic string) SubscribeOption {
 	return option
 }
 
+func (option SubscribeOption) SetRecords(records record.Factory) SubscribeOption {
+	option.Records = records
+	return option
+}
+
+func (option SubscribeOption) SetHealthReporter(reporter *health.StatusReporter) SubscribeOption {
+	option.Reporter = reporter
+	return option
+}
+
 type Decoder interface {
 	Decode(message kafka.Message) (message.Message, error)
 }
@@ -46,31 +69,22 @@ type Subscriber struct {
 	readerConfig kafka.ReaderConfig
 	opt          SubscribeOption
 	pb           *prob.Prob
-	outputChan   chan message.InputMessage
+	c 			 chan message.InputMessage
 }
 
 func NewKafkaSubscriber(option SubscribeOption) (*Subscriber, error) {
-	option = completeSubscribeOption(option)
-	readerCfg := kafka.ReaderConfig{
-		Brokers: option.Addr,
+	readerCfg, err := completeSubscribeOption(option)
+	if err != nil {
+		return nil, err
 	}
-
-	if option.Topic == nil || *option.Topic == "" {
-		return nil, errors.New("empty topic")
-	}
-
-	if option.GroupID != nil {
-		readerCfg.GroupID = *option.GroupID
-	}
-
 	reader := &Subscriber{
 		mx:           new(mutex.Mutex),
 		setupStatus:  0,
 		readerConfig: readerCfg,
 		opt:          option,
-		outputChan:   make(chan message.InputMessage, 1),
+		c: 			  make(chan message.InputMessage, 1),
 	}
-	reader.pb = prob.New(reader.runNotify)
+	reader.pb = prob.New(reader.runLoop)
 	reader.pb.Start()
 	return reader, nil
 }
@@ -80,69 +94,103 @@ func (s *Subscriber) Close() error {
 	return nil
 }
 
-func completeSubscribeOption(option SubscribeOption) SubscribeOption {
-	return option
-}
-
-
-func (s *Subscriber) runNotify(ctx context.Context) {
-	var partId = s.opt.PartitionID
-
-	agent, err := s.newPartReader(ctx, partId)
-	if err != nil {
-		return
+func completeSubscribeOption(option SubscribeOption) (kafka.ReaderConfig, error) {
+	if option.Topic == nil || *option.Topic == "" {
+		return kafka.ReaderConfig{}, errors.New("empty topic")
 	}
 
-	clt := client.New(agent, client.Option{}.SetParallelCount(1))
+	readerCfg := kafka.ReaderConfig{
+		Brokers: option.Addr,
+	}
 
+	if option.Topic != nil {
+		readerCfg.Topic = *option.Topic
+	}
+	if option.GroupID != nil {
+		readerCfg.GroupID = *option.GroupID
+	}
+	if option.PartitionID != 0 {
+		readerCfg.Partition = int(option.PartitionID)
+	}
+
+	return readerCfg, nil
+}
+
+func (s *Subscriber) reportStatus(detail string, code health.StatusCode) {
+	if s.opt.Reporter != nil {
+		s.opt.Reporter.ReportStatus(detail, code)
+	}
+}
+
+func (s *Subscriber) runLoop(ctx context.Context) {
+	for {
+		s.run(ctx)
+		select {
+		case <- ctx.Done():
+		case <- time.After(3 * time.Second):
+		}
+	}
+}
+
+func (s *Subscriber) run(ctx context.Context) error {
+	reader := s.newMessageReader()
+	middles := s.getClientMiddles()
+	clt := client.New(reader, client.Option{}.SetParallelCount(1).AddMiddle(middles...))
+	defer func() {
+		clt.CloseWithContext(ctx)
+	}()
+
+	s.reportStatus("up", health.StatusUp)
+
+	var err error
 	for ctx.Err() == nil {
-		err = clt.Do(ctx, func(ctx context.Context, a client.Agent) error {
-			reader := a.(*partReader)
+		err = clt.Do(ctx, func(ctx context.Context, agent client.Agent) error {
+			reader := agent.(*messageReader)
 			input, err := reader.read(ctx)
 			if err != nil {
 				return err
 			}
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case s.outputChan <- input:
-				return nil
+			case s.c <- input:
+			case <- ctx.Done():
+				return err
 			}
-		})
+			return nil
+		}, client.ActionOption{}.SetName("receiveInput"))
+
+		if err != nil {
+			s.reportStatus(err.Error(), health.StatusAbnormal)
+			break
+		}
 	}
 
-	return
+	if err == nil {
+		s.reportStatus("down", health.StatusDown)
+	}
+
+	return err
 }
 
-func (s *Subscriber) Read(ctx context.Context) (message.InputMessage, error) {
-	select {
-	case <-ctx.Done():
-		return message.InputMessage{}, ctx.Err()
-	case input := <-s.outputChan:
-		return input, nil
+func (s *Subscriber) getClientMiddles() []client.DoMiddle {
+	var mds = []client.DoMiddle{
+		richclient.NewRecorderMiddle(s.opt.Records),
 	}
+	if limiter := s.opt.Limiter; limiter != nil {
+		richclient.LimiterMiddle(limiter)
+	}
+	return mds
 }
 
-func (s *Subscriber) newPartReader(ctx context.Context, part int64) (*partReader, error) {
-	pr := &partReader{
-		partition: part,
-		sb:        s,
-	}
-	err := pr.Reset(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return pr, nil
-}
-
-func (s *Subscriber) newKafkaReader(partition int64) *kafka.Reader {
+func (s *Subscriber) newMessageReader() *messageReader {
 	config := s.readerConfig
-	config.Partition = int(partition)
 	reader := kafka.NewReader(config)
-	return reader
+	return &messageReader {
+		subscriber: s,
+		reader: reader,
+	}
 }
 
-func (s *Subscriber) decodeMessage(kafkaMsg kafka.Message, ak acker) (message.InputMessage, error) {
+func (s *Subscriber) decodeMessage(kafkaMsg kafka.Message, ak committer) (message.InputMessage, error) {
 	return message.InputMessage{
 		Topic: kafkaMsg.Topic,
 		Acker: ak,
@@ -153,42 +201,32 @@ func (s *Subscriber) decodeMessage(kafkaMsg kafka.Message, ak acker) (message.In
 	}, nil
 }
 
-type partReader struct {
-	partition int64
-	sb        *Subscriber
+type messageReader struct {
+	subscriber *Subscriber
 	reader    *kafka.Reader
 }
 
-func (reader *partReader) read(ctx context.Context) (message.InputMessage, error) {
+func (reader *messageReader) read(ctx context.Context) (message.InputMessage, error) {
 	msg, err := reader.reader.FetchMessage(ctx)
 	if err != nil {
 		return message.InputMessage{}, err
 	}
 
-	return reader.sb.decodeMessage(msg, acker{
+	return reader.subscriber.decodeMessage(msg, committer{
 		msg:    msg,
 		reader: reader.reader,
 	})
 }
 
-func (reader *partReader) Reset(ctx context.Context) error {
-	if reader.reader != nil {
-		reader.reader.Close()
-		reader.reader = nil
-	}
-	reader.reader = reader.sb.newKafkaReader(reader.partition)
-	return nil
-}
-
-func (reader *partReader) CloseWithContext(ctx context.Context) error {
+func (reader *messageReader) CloseWithContext(ctx context.Context) error {
 	return reader.reader.Close()
 }
 
-type acker struct {
+type committer struct {
 	msg    kafka.Message
 	reader *kafka.Reader
 }
 
-func (ack acker) Ack(ctx context.Context) {
+func (ack committer) Commit(ctx context.Context) {
 	ack.reader.CommitMessages(ctx, ack.msg)
 }

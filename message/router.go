@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/feynman-go/workshop/mutex"
+	"github.com/feynman-go/workshop/record"
+	"github.com/feynman-go/workshop/record/easyrecord"
 	"github.com/feynman-go/workshop/syncrun"
 	"github.com/feynman-go/workshop/syncrun/prob"
 	"go.uber.org/zap"
@@ -24,15 +26,15 @@ type InputMessage struct {
 	Acker Acker
 }
 
-func (msg InputMessage) Ack(ctx context.Context) {
+func (msg InputMessage) Commit(ctx context.Context) {
 	if msg.Acker != nil {
-		msg.Acker.Ack(ctx)
+		msg.Acker.Commit(ctx)
 	}
 	return
 }
 
 type Acker interface {
-	Ack(ctx context.Context)
+	Commit(ctx context.Context)
 }
 
 type Router struct {
@@ -174,7 +176,7 @@ func (joint *subscribeJoint) handleMessage(ctx context.Context, msg InputMessage
 	if mx.Hold(ctx) {
 		mx.Release()
 		if remain == 0 {
-			msg.Ack(ctx)
+			msg.Commit(ctx)
 			return nil
 		}
 	}
@@ -229,6 +231,25 @@ func (middle RetryMiddle) Warp(handler Handler) Handler {
 		},
 	}
 }
+
+type RecordMiddle struct {
+	Records record.Factory
+}
+
+func (middle RecordMiddle) Warp(handler Handler) Handler {
+	return &middleHandler {
+		handler, func(ctx context.Context, topic string, msg Message) error {
+			r := middle.Records
+			if r == nil {
+				r = easyrecord.ExtraFromContext(ctx)
+			}
+			return easyrecord.DoWithRecords(ctx, func(ctx context.Context) error {
+				return handler.HandleMessage(ctx, topic, msg)
+			}, r,handler.Name())
+		},
+	}
+}
+
 
 type middleHandler struct {
 	Handler

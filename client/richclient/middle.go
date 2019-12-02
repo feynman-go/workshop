@@ -7,24 +7,18 @@ import (
 	"github.com/feynman-go/workshop/record"
 	"github.com/feynman-go/workshop/record/easyrecord"
 	"golang.org/x/time/rate"
-	"time"
 )
 
 type limiterMiddle struct {
 	limiter *rate.Limiter
-	maxWait time.Duration
 }
 
-func LimiterMiddle(limiter *rate.Limiter, maxWait time.Duration) client.DoMiddle {
-	return limiterMiddle{limiter, maxWait}
+func LimiterMiddle(limiter *rate.Limiter) client.DoMiddle {
+	return limiterMiddle{limiter}
 }
 
 func (lm limiterMiddle) WrapDo(f func(ctx context.Context, agent client.Agent) error, opt client.ActionOption) func(ctx context.Context, agent client.Agent) error {
 	return func(ctx context.Context, agent client.Agent) error {
-		if lm.maxWait != 0 {
-			ctx, _ = context.WithTimeout(ctx, lm.maxWait)
-		}
-
 		err := lm.limiter.Wait(ctx)
 		if err != nil {
 			return err

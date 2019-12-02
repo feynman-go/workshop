@@ -168,8 +168,8 @@ func NewLoggerRecorderFactory(logger *zap.Logger, messageDesc string) *LoggerFac
 func (factory *LoggerFactory) ActionRecorder(ctx context.Context, name string, fields ...record.Field) (record.Recorder, context.Context) {
 	span := opentracing.SpanFromContext(ctx)
 	if span != nil {
-		spanCtx, _ := span.Context().(jaeger.SpanContext)
-		if spanCtx.IsValid() {
+		spanCtx, ok := span.Context().(jaeger.SpanContext)
+		if ok && spanCtx.IsValid() {
 			fields = append(fields,
 				record.StringField("trace_id", spanCtx.TraceID().String()),
 				record.StringField("span_id", spanCtx.SpanID().String()),

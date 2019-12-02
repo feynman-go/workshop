@@ -148,7 +148,7 @@ func (cr chainRecorder) Commit(err error, fields ...Field) {
 type intField int64
 
 func (f intField) Marshal() string {
-	return strconv.FormatInt(int64(f), 64)
+	return strconv.FormatInt(int64(f), 10)
 }
 
 func (f intField) Value() interface{} {
