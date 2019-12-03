@@ -38,7 +38,14 @@ func (prom *HealthProm) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(prom.summaryHealthDesc, prometheus.CounterValue, float64(report.BadHeighLevel), health.HealthLevelHighPriority.String())
 	ch <- prometheus.MustNewConstMetric(prom.summaryHealthDesc, prometheus.CounterValue, float64(report.BadLowLevel), health.HealthLevelLowPriority.String())
 
-	for _, comp := range report.Expose {
+
+	list := make([]health.CheckInfo, 0, len(report.Expose) + len(report.External) + len(report.Internal))
+
+	list = append(list, report.Expose...)
+	list = append(list, report.External...)
+	list = append(list, report.Internal...)
+
+	for _, comp := range list {
 		ss := comp.Record.Status
 		var status = health.StatusUnknown
 		if len(ss) > 0 {
