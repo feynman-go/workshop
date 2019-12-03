@@ -65,6 +65,10 @@ func (cc *Circuit) Status() Status {
 	return cc.status
 }
 
+func (cc *Circuit) StatusChange() chan struct{} {
+	return cc.statusUpdated
+}
+
 // wait unit context Close
 func (cc *Circuit) Do(ctx context.Context, do func(ctx context.Context) error) error {
 	cc.rw.RLock()
@@ -136,14 +140,14 @@ func (cc *Circuit) updateStatus(status Status) {
 	cc.statusUpdated = make(chan struct{})
 }
 
-type ErrLimiterTrigger struct {
+type TriggerTemplate struct {
 	ErrLimiter ErrLimiter
 	RecoveryFactory func(ctx context.Context) Recovery
 	recoveryChan chan struct{}
 	rw sync.RWMutex
 }
 
-func (trigger *ErrLimiterTrigger) Reset() {
+func (trigger *TriggerTemplate) Reset() {
 	if trigger.recoveryChan != nil {
 		close(trigger.recoveryChan)
 		trigger.recoveryChan = nil
@@ -151,7 +155,7 @@ func (trigger *ErrLimiterTrigger) Reset() {
 	trigger.recoveryChan = make(chan struct{})
 }
 
-func (trigger *ErrLimiterTrigger) Accept(res ExecResult) {
+func (trigger *TriggerTemplate) Accept(res ExecResult) {
 	if trigger.ErrLimiter.accept(res) {
 		trigger.rw.Lock()
 		defer trigger.rw.Unlock()
@@ -160,7 +164,7 @@ func (trigger *ErrLimiterTrigger) Accept(res ExecResult) {
 	}
 }
 
-func (trigger *ErrLimiterTrigger) WaitTrigger(ctx context.Context) Recovery {
+func (trigger *TriggerTemplate) WaitTrigger(ctx context.Context) Recovery {
 	trigger.rw.RLock()
 	cn := trigger.recoveryChan
 	trigger.rw.RUnlock()

@@ -1,4 +1,4 @@
-package healthprom
+package easyhealth
 
 import (
 	"github.com/feynman-go/workshop/health"

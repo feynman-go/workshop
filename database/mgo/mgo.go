@@ -7,7 +7,7 @@ import (
 	"github.com/feynman-go/workshop/client"
 	"github.com/feynman-go/workshop/client/richclient"
 	"github.com/feynman-go/workshop/health"
-	"github.com/feynman-go/workshop/health/healthbreak"
+	"github.com/feynman-go/workshop/health/easyhealth"
 	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/record"
 	"github.com/feynman-go/workshop/richclose"
@@ -75,7 +75,7 @@ func (opt Option) AddClientMid(mid client.DoMiddle) Option {
 func New(agent DbAgent, option Option) *DbClient {
 	var closer richclose.WithContextCloser
 	if bk := agent.GetBreaker(); bk != nil && option.StatusReporter != nil {
-		closer = healthbreak.StartBreakerReport(bk, option.StatusReporter)
+		closer = easyhealth.StartBreakerReport(bk, option.StatusReporter)
 	}
 	return &DbClient{
 		clt: client.New(agent, buildClientOption(option, agent)),

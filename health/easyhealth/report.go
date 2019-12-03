@@ -1,4 +1,4 @@
-package healthhttp
+package easyhealth
 
 import (
 	"encoding/json"

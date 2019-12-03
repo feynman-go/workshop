@@ -1,4 +1,4 @@
-package healthbreak
+package easyhealth
 
 import (
 	"context"
