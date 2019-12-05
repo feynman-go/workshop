@@ -67,7 +67,6 @@ func (tb *Table) Get(key interface{}) (interface{}, bool) {
 	seq := ctn.seq
 	tb.moveToEnd(e)
 	tb.rw.Unlock()
-
 	return ctn.GetData(now, seq)
 }
 
@@ -129,7 +128,6 @@ func (tb *Table) KeepLive(key interface{}, option ...KeepLiveOption) bool {
 	seq := ctn.GetSeq()
 	tb.moveToEnd(e)
 	tb.rw.RUnlock()
-
 	ctn.KeepLive(duration, seq)
 	return false
 }
@@ -164,12 +162,11 @@ func (tb *Table) load(key Key, data Value, keepLive time.Duration) (ctn *contain
 		ctn.KeepLive(keepLive, ctn.GetSeq())
 		tb.moveToEnd(e)
 	}
-
 	return
 }
 
 func (tb *Table) add(key Key, data Value, keepLive time.Duration) *container {
-	ctn := tb.newContainer(key, data, keepLive)
+	ctn := tb.newContainer(key, data)
 	e := tb.ll.PushBack(ctn)
 	tb.mp[key] = e
 
@@ -187,6 +184,9 @@ func (tb *Table) add(key Key, data Value, keepLive time.Duration) *container {
 				tb.ll.Remove(releaseItem)
 			}
 		}
+	}
+	if keepLive > 0 {
+		ctn.KeepLive(keepLive, ctn.GetSeq())
 	}
 	return ctn
 }
@@ -219,7 +219,7 @@ func (tb *Table) releaseContainer(ctn *container, seq uint64) bool {
 }
 
 
-func (tb *Table) newContainer(key Key, value Value, keepLive time.Duration) *container{
+func (tb *Table) newContainer(key Key, value Value) *container{
 	ctn := ctnPool.Get().(*container)
 	tb.seq ++
 	ctn.seq = tb.seq
@@ -230,9 +230,6 @@ func (tb *Table) newContainer(key Key, value Value, keepLive time.Duration) *con
 		ctn.timer.Stop()
 	}
 	ctn.table = tb
-	if keepLive != 0 {
-		ctn.liveTime = time.Now().Add(keepLive)
-	}
 	return ctn
 }
 
@@ -276,10 +273,8 @@ func (c *container) GetData(now time.Time, seq uint64) (interface{}, bool) {
 		return nil, false
 	}
 
-	if !c.liveTime.IsZero() {
-		if c.liveTime.Before(now) {
-			return nil, false
-		}
+	if c.isTimeout(now) {
+		return nil, false
 	}
 
 	if c.closed {
@@ -307,7 +302,9 @@ func (c *container) KeepLive(duration time.Duration, seq uint64) bool {
 	if duration != 0 {
 		c.liveTime = time.Now().Add(duration)
 		c.timer = time.AfterFunc(duration, func() {
-			c.table.deleteBySeq(c.key, seq)
+			if c.IsTimeout(time.Now()) {
+				c.table.deleteBySeq(c.key, seq)
+			}
 		})
 	} else {
 		c.liveTime = time.Time{}
@@ -315,6 +312,20 @@ func (c *container) KeepLive(duration time.Duration, seq uint64) bool {
 
 	return false
 }
+
+func (c *container) isTimeout(now time.Time) bool {
+	if !c.liveTime.IsZero() && !c.liveTime.After(now){
+		return true
+	}
+	return false
+}
+
+func (c *container) IsTimeout(now time.Time) bool {
+	c.rw.RLock()
+	defer c.rw.RUnlock()
+	return c.isTimeout(now)
+}
+
 
 func (c *container) release(exchanger Exchanger, seq uint64) bool {
 	if c.seq != seq {

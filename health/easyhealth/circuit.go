@@ -16,9 +16,7 @@ func StartCircuitReport(cc *circuit.Circuit, reporter *health.StatusReporter) ri
 		for ctx.Err() == nil {
 			status := cc.Status()
 			switch status {
-			case circuit.STATUS_HALF_OPEN:
-				reporter.ReportStatus("", health.StatusWarning)
-			case circuit.STATUS_CLOSE:
+			case circuit.STATUS_WAITING_RECOVERY:
 				reporter.ReportStatus("", health.StatusAbnormal)
 			case circuit.STATUS_OPEN:
 				reporter.ReportStatus("", health.StatusOk)
