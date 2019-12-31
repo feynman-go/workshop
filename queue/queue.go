@@ -9,7 +9,7 @@ import (
 
 type Queue struct {
 	mx sync.RWMutex
-	closed bool
+	closed chan struct{}
 	l *list.List
 	peeked *list.Element
 	queueFull chan struct{}
@@ -20,6 +20,7 @@ type Queue struct {
 func NewQueue(max int) *Queue {
 	return &Queue{
 		addNotify: make(chan struct{}, 1),
+		closed: make(chan struct{}),
 		l: list.New(),
 		max: max,
 	}
@@ -28,11 +29,12 @@ func NewQueue(max int) *Queue {
 func (queue *Queue) Push(ctx context.Context, data interface{}) error {
 	for ctx.Err() == nil {
 		queue.mx.Lock()
-		closed := queue.closed
 		queueFull := queue.queueFull
-		if closed {
+		select {
+		case <- queue.closed:
 			queue.mx.Unlock()
 			return errors.New("closed")
+		default:
 		}
 		if queueFull == nil {
 			queue.l.PushFront(data)
@@ -46,8 +48,8 @@ func (queue *Queue) Push(ctx context.Context, data interface{}) error {
 		queue.mx.Unlock()
 
 		select {
-		case <- queueFull:
 		case <- ctx.Done():
+		case <- queueFull:
 			return ctx.Err()
 		}
 	}
@@ -71,25 +73,32 @@ func (queue *Queue) WaitOk(ctx context.Context) error {
 
 func (queue *Queue) Peek(ctx context.Context) (interface{}, error) {
 	for ctx.Err() == nil {
-		nf, err := queue.tryPeek(ctx)
+		it, ok, err := queue.tryPeek(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if nf != nil {
-			return nf, nil
+		if ok {
+			return it, nil
+		}
+		select {
+		case <- ctx.Done():
+			return nil, nil
+		case <- queue.closed:
+		case <- queue.addNotify:
 		}
 	}
 	return nil, nil
 }
 
-func (queue *Queue) tryPeek(ctx context.Context) (interface{}, error) {
+func (queue *Queue) tryPeek(ctx context.Context) (interface{}, bool, error) {
 	queue.mx.Lock()
-	defer  queue.mx.Unlock()
-
-	closed := queue.closed
 	peeked := queue.peeked
-	if closed {
-		return nil, errors.New("closed")
+
+	select {
+	case <- queue.closed: // not need lock, only for read
+		queue.mx.Unlock()
+		return nil, false, errors.New("closed")
+	default:
 	}
 
 	var ret *list.Element
@@ -102,25 +111,26 @@ func (queue *Queue) tryPeek(ctx context.Context) (interface{}, error) {
 		queue.peeked = ret
 	}
 
-	if ret == nil {
-		select {
-		case <- queue.addNotify:
-		case <- ctx.Done():
-		}
-		return nil, nil
-	} else {
+	queue.mx.Unlock()
+
+	if ret != nil {
 		nf := ret.Value
-		return nf, nil
+		return nf, true, nil
 	}
+
+	return nil, false, nil
 }
 
 func (queue *Queue) AckPeeked(ctx context.Context) error {
 	queue.mx.Lock()
-	defer  queue.mx.Unlock()
+	defer queue.mx.Unlock()
 
-	if queue.closed {
-		return nil
+	select {
+	case <- queue.closed:
+		return errors.New("closed")
+	default:
 	}
+
 
 	queueFull := queue.queueFull
 	if queue.peeked == nil {
@@ -154,13 +164,20 @@ func (queue *Queue) ResetPeeked() {
 func (queue *Queue) CloseWithContext(ctx context.Context) error {
 	queue.mx.Lock()
 	defer queue.mx.Unlock()
-	if !queue.closed {
-		queue.closed = true
+
+	select {
+	case <- queue.closed:
+		return errors.New("closed")
+	default:
+		close(queue.closed)
 	}
 	return nil
 }
 
 func (queue *Queue) LastPeeked() interface{} {
+	queue.mx.RLock()
+	defer queue.mx.RUnlock()
+
 	nf := queue.peeked.Value
 	return &nf
 }
