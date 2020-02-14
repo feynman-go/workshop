@@ -8,14 +8,23 @@ import (
 	"time"
 )
 
+const (
+	_EXPECT_STATE_INIT = 0
+	_EXPECT_STATE_UP   = 1
+	_EXPECT_STATE_DOWN     = 2
+)
+
 type Prob struct {
 	rw           sync.RWMutex
 	cancel       func()
-	stopAccepted bool
+
+	expectState int32
+
+	//stopAccepted bool
 	stopChan     chan struct{}
 	runningChan  chan struct{}
 	f            func(ctx context.Context)
-	started      bool
+	//started      bool
 }
 
 func New(f func(ctx context.Context)) *Prob {
@@ -31,7 +40,9 @@ func (prob *Prob) run() {
 	defer prob.didStopped()
 	runCtx, cancel := context.WithCancel(context.Background())
 	// notify update
-	prob.didRunning(cancel)
+	if !prob.didRunning(cancel) {
+		return
+	}
 	if prob.f != nil {
 		prob.f(runCtx)
 	}
@@ -41,31 +52,56 @@ func (prob *Prob) Stop() {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
-	if !prob.stopAccepted {
-		prob.stopAccepted = true
-		prob.stop()
+	switch prob.expectState {
+	case _EXPECT_STATE_INIT, _EXPECT_STATE_UP:
+		prob.notifyStop()
+		prob.expectState = _EXPECT_STATE_DOWN
+
+		select {
+		// 还未开始
+		case <- prob.runningChan:
+		default:
+			close(prob.stopChan)
+		}
+
+	case _EXPECT_STATE_DOWN:
 	}
 }
 
 func (prob *Prob) StopAccepted() bool {
-	prob.rw.Lock()
-	defer prob.rw.Unlock()
+	prob.rw.RLock()
+	defer prob.rw.RUnlock()
 
-	return prob.stopAccepted
+	return prob.expectState == _EXPECT_STATE_DOWN
 }
 
 func (prob *Prob) Stopped() chan struct{} {
 	return prob.stopChan
 }
 
-func (prob *Prob) didRunning(cancel func()) {
+func (prob *Prob) didRunning(cancel func()) bool {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
-	if !prob.IsRunning() && !prob.IsStopped() {
+	if prob.expectState == _EXPECT_STATE_UP {
+		prob.cancel = cancel
 		close(prob.runningChan)
+		return true
 	}
-	prob.cancel = cancel
+	return false
+}
+
+func (prob *Prob) didStopped() {
+	prob.rw.Lock()
+	defer prob.rw.Unlock()
+
+	prob.cancel = nil
+
+	select {
+	case <- prob.stopChan:
+	default:
+		close(prob.stopChan)
+	}
 }
 
 func (prob *Prob) IsStopped() bool {
@@ -82,28 +118,19 @@ func (prob *Prob) IsRunning() bool {
 	case <- prob.stopChan:
 		return false
 	case <- prob.runningChan:
+		select {
+		case <- prob.stopChan:
+			return false
+		default:
+			return true
+		}
 		return true
 	default:
 		return false
 	}
 }
 
-
-func (prob *Prob) didStopped() {
-	prob.rw.Lock()
-	defer prob.rw.Unlock()
-
-	prob.stop()
-	prob.cancel = nil
-	if !prob.IsRunning() {
-		close(prob.runningChan)
-	}
-	if !prob.IsStopped() {
-		close(prob.stopChan)
-	}
-}
-
-func (prob *Prob) stop() {
+func (prob *Prob) notifyStop() {
 	if prob.cancel != nil {
 		prob.cancel()
 	}
@@ -119,16 +146,23 @@ func (prob *Prob) Start() bool {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
-	if prob.stopAccepted || prob.IsStopped() || prob.IsRunning() || prob.started {
+	switch prob.expectState {
+	case _EXPECT_STATE_INIT:
+		prob.expectState = _EXPECT_STATE_UP
+		go prob.run()
+	case _EXPECT_STATE_UP:
+		return false
+	case _EXPECT_STATE_DOWN:
 		return false
 	}
-	go prob.run()
-	prob.started = true
 	return true
 }
 
 func (prob *Prob) StopAndWait(ctx context.Context) error {
 	prob.Stop()
+	prob.rw.Lock()
+	prob.rw.Unlock()
+
 	select {
 	case <- ctx.Done():
 		return ctx.Err()

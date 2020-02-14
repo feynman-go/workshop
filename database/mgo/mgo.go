@@ -209,29 +209,111 @@ type ChangeStreamQuery struct {
 	ResumeTimestamp primitive.Timestamp // for first stream start, is ResumeTimestamp T is 0, then t is current time
 }
 
-// only a help function, if operation return err is not nil, close cursor and return
-func (mgo *DbClient) HandleColChangeStream(ctx context.Context, query ChangeStreamQuery, operation func(ctx context.Context, data ChangeData) error) error {
-	if query.Col == "" {
-		return errors.New("empty collection")
-	}
-	if query.Match == nil {
-		query.Match = bson.D{}
+type ChangeCursor struct {
+	query ChangeStreamQuery
+	dbClient *DbClient
+	rw sync.RWMutex
+	cs *mongo.ChangeStream
+	resumeToken bson.Raw
+}
+
+func (c *ChangeCursor) Next(ctx context.Context) (*ChangeData, error) {
+	cs, err := c.readyChangeStream(ctx)
+	if err != nil {
+		return nil, err
 	}
 
+	var doc = changeDocument{}
+
+	if !cs.Next(ctx) {
+		err := cs.Err()
+		if err == context.Canceled || err == context.DeadlineExceeded && ctx.Err() != nil {
+			err = nil
+		}
+		return nil, err
+	}
+
+	err = cs.Decode(&doc)
+	if err != nil {
+		return nil, err
+	}
+
+	c.rw.Lock()
+	c.resumeToken = cs.ResumeToken()
+	if doc.OperationType == "invalidate" {
+		c.cs = nil
+		go func(cs *mongo.ChangeStream) {
+			cs.Close(context.Background())
+		}(cs)
+		c.rw.Unlock()
+		return nil, nil
+	}
+	c.rw.Unlock()
+
+	data := ChangeData{
+		OperationType: OperationType(doc.OperationType),
+		FullDocument: doc.FullDocument,
+		ResumeToken: doc.ResumeToken,
+	}
+	return &data, nil
+}
+
+func (c *ChangeCursor) readyChangeStream(ctx context.Context) (*mongo.ChangeStream, error){
+	c.rw.RLock()
+	var cs = c.cs
+	c.rw.RUnlock()
+
+	if cs != nil {
+		return cs, nil
+	}
+
+	c.rw.Lock()
+	defer c.rw.Unlock()
+	if c.cs != nil {
+		return cs, nil
+
+	}
+	var err error
+	cs, err = c.createChangeStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c.cs = cs
+	return cs, nil
+}
+
+type changeDocument struct {
+	ResumeToken   bson.RawValue `bson:"_id"`
+	OperationType string        `bson:"operationType"`
+	FullDocument  bson.RawValue `bson:"fullDocument,omitempty"`
+	DocumentKey   struct {
+		ID bson.RawValue `bson:"_id"`
+	} `bson:"documentKey,omitempty"`
+}
+
+
+
+func (c *ChangeCursor) buildPipeLine() interface{} {
+	query := c.query
 	pipeline := mongo.Pipeline{
 		{
 			{"$match", bson.M{
-			"$or": bson.A{
-				bson.M{
-					"operationType": bson.M{"$in": bson.A{"insert", "replace", "delete", "update"}},
-					"fullDocument": query.Match,
+				"$or": bson.A{
+					bson.M{
+						"$and": bson.A {
+							bson.M{
+								"operationType": bson.M{"$in": bson.A{"insert", "replace", "delete", "update"}},
+							},
+							query.Match,
+						},
+					},
+					bson.M{
+						"operationType": bson.M{"$in": bson.A{"invalidate"}},
+					},
 				},
-				bson.M{
-					"operationType": bson.M{"$in": bson.A{"invalidate"}},
-				},
-			},
-		}},
-	}}
+			}},
+		}}
 
 	if query.Project != nil {
 		pipeline = append(pipeline, bson.D{
@@ -241,70 +323,105 @@ func (mgo *DbClient) HandleColChangeStream(ctx context.Context, query ChangeStre
 		})
 	}
 
+	return pipeline
+}
 
-	type Document struct {
-		ResumeToken   bson.RawValue `bson:"_id"`
-		OperationType string        `bson:"operationType"`
-		FullDocument  bson.RawValue `bson:"fullDocument,omitempty"`
-		DocumentKey   struct {
-			ID bson.RawValue `bson:"_id"`
-		} `bson:"documentKey,omitempty"`
+func (c *ChangeCursor) createChangeStream(ctx context.Context) (*mongo.ChangeStream, error) {
+	var (
+		opts = options.ChangeStream().SetFullDocument(options.UpdateLookup).
+			SetMaxAwaitTime(10 * time.Second)
+		query = c.query
+		resumeToken = query.ResumeToken
+		pipeline = c.buildPipeLine()
+	)
+
+	if c.resumeToken != nil {
+		resumeToken = c.resumeToken
 	}
 
-
-	return mgo.LongTimeDo(ctx, func(ctx context.Context, db *mongo.Database) error {
-		var resumeToken = query.ResumeToken
-
-		for ctx.Err() == nil {
-
-			opts := options.ChangeStream().SetFullDocument(options.UpdateLookup).
-				SetMaxAwaitTime(10 * time.Second)
-
-			if query.ResumeToken != nil {
-				opts = opts.SetResumeAfter(resumeToken)
-			} else {
-				if query.ResumeTimestamp.T == 0 {
-					query.ResumeTimestamp.T = uint32(time.Now().Unix())
-				}
-				opts = opts.SetStartAtOperationTime(&query.ResumeTimestamp)
-			}
-
-			cs, err := db.Collection(query.Col).Watch(ctx, pipeline, opts)
-			if err != nil {
-				return fmt.Errorf("watch change stream: %v", err)
-			}
-
-			var doc = Document{}
-			for cs.Next(ctx) {
-				err = cs.Decode(&doc)
-				if err != nil {
-					break
-				}
-
-				resumeToken = cs.ResumeToken()
-				if doc.OperationType == "invalidate" {
-					break
-				}
-
-				err = operation(ctx, ChangeData{
-					OperationType: OperationType(doc.OperationType),
-					FullDocument: doc.FullDocument,
-					ResumeToken: doc.ResumeToken,
-				})
-			}
-			if cs.Err() != nil {
-				err = cs.Err()
-			}
-
-			closeCtx, _ := context.WithTimeout(context.Background(), 5 * time.Second)
-			cs.Close(closeCtx)
-
-			if err != nil {
-				break
-			}
+	if resumeToken != nil {
+		opts = opts.SetResumeAfter(resumeToken)
+	} else {
+		if query.ResumeTimestamp.T == 0 {
+			query.ResumeTimestamp.T = uint32(time.Now().Unix())
 		}
-		return ctx.Err()
+		opts = opts.SetStartAtOperationTime(&query.ResumeTimestamp)
+	}
+
+	var changeStream *mongo.ChangeStream
+	err := c.dbClient.Do(ctx, func(ctx context.Context, db *mongo.Database) error {
+		var err error
+		changeStream, err = db.Collection(query.Col).Watch(ctx, pipeline, opts)
+		if err != nil {
+			return fmt.Errorf("watch change stream: %v", err)
+		}
+		return nil
 	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return changeStream, nil
+}
+
+func (c *ChangeCursor) CloseWithContext(ctx context.Context) error {
+	c.rw.Lock()
+	defer c.rw.Unlock()
+	if c.cs != nil {
+		err := c.cs.Close(ctx)
+		if err != nil {
+			return err
+		}
+		c.cs = nil
+	}
+	return nil
+}
+
+func (mgo *DbClient) ChangeStreamCursor(ctx context.Context, query ChangeStreamQuery) (*ChangeCursor, error) {
+	if query.Col == "" {
+		return nil, errors.New("empty collection")
+	}
+	if query.Match == nil {
+		query.Match = bson.D{}
+	}
+
+	return &ChangeCursor{
+		query:       query,
+		dbClient:    mgo,
+		rw:          sync.RWMutex{},
+		cs:          nil,
+		resumeToken: nil,
+	}, nil
+}
+
+
+// only a help function, if operation return err is not nil, close cursor and return
+func (mgo *DbClient) HandleColChangeStream(ctx context.Context, query ChangeStreamQuery, operation func(ctx context.Context, data ChangeData) error) error {
+	cc, err := mgo.ChangeStreamCursor(ctx, query)
+	if err != nil {
+		return err
+	}
+
+	defer cc.CloseWithContext(context.Background())
+
+	for ctx.Err() == nil {
+
+		cd, err := cc.Next(ctx)
+		if err != nil {
+			return err
+		}
+
+		if cd == nil {
+			continue
+		}
+
+		err = operation(ctx, *cd)
+		if err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
 }
 
 
