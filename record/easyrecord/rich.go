@@ -11,14 +11,69 @@ import (
 	"time"
 )
 
-func EasyRecorders(desc string, factory ...record.Factory) record.Factory {
+func EasyRecorders(desc string) record.Factory {
+	return Factory{
+		Desc:          desc,
+		PromFactory:   nil,
+		TracerFactory: nil,
+		LoggerFactory: nil,
+	}.Create()
+}
+
+type Factory struct {
+	Desc string
+	PromFactory func() *PromFactory
+	TracerFactory func() *TracerFactory
+	LoggerFactory func() *LoggerFactory
+}
+
+func (factory Factory) Create() record.Factory {
+	if factory.Desc == "" {
+		panic("bad factory desc name")
+	}
 	fs := []record.Factory{}
-	fs = append(fs, contextRecords{tracerRecordersKey{}, NewTracerFactory(nil)})
-	fs = append(fs, contextRecords{loggerRecordersKey{}, NewLoggerRecorderFactory(nil, desc)})
-	fs = append(fs, contextRecords{promRecordersKey{}, NewPromRecorderFactory(desc)})
-	fs = append(fs, factory...)
+
+	var (
+		tracerFactory *TracerFactory
+		promFactory *PromFactory
+		LoggerFactory *LoggerFactory
+	)
+
+	if factory.PromFactory != nil {
+		promFactory = factory.PromFactory()
+	} else {
+		promFactory = NewPromRecorderFactory(factory.Desc)
+	}
+
+	if factory.TracerFactory != nil {
+		tracerFactory = factory.TracerFactory()
+	} else {
+		tracerFactory = NewTracerFactory(nil)
+	}
+
+	if factory.LoggerFactory != nil {
+		LoggerFactory = factory.LoggerFactory()
+	} else {
+		LoggerFactory = NewLoggerRecorderFactory(nil, factory.Desc)
+	}
+
+	if tracerFactory != nil {
+		fs = append(fs, contextRecords{tracerRecordersKey{}, tracerFactory})
+	}
+	if LoggerFactory != nil {
+		fs = append(fs, contextRecords{loggerRecordersKey{}, LoggerFactory})
+	}
+	if promFactory != nil {
+		fs = append(fs, contextRecords{promRecordersKey{}, promFactory})
+	}
+
 	return contextRecords{easyRecordersKey{}, record.ChainFactory(fs...)}
 }
+
+func ContextRecords(key interface{}, factory record.Factory) record.Factory {
+	return contextRecords{key, factory}
+}
+
 
 type easyRecordersKey struct {}
 type tracerRecordersKey struct {}
