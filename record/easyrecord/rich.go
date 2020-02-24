@@ -179,15 +179,22 @@ func (factory *PromFactory) ActionRecorder(ctx context.Context, name string, fie
 }
 
 func (factory *PromFactory) buildLabel(name string, err error, fields []record.Field) prometheus.Labels {
-	lbs := prometheus.Labels{
-		"err": strconv.FormatBool(err != nil),
-		"name": name,
-	}
+	lbs := prometheus.Labels(make(map[string]string, len(factory.fields)))
+	lbs["err"] = strconv.FormatBool(err != nil)
+	lbs["name"] = name
+
 	for _, f := range fields {
 		if factory.fields[f.Name] {
 			lbs[f.Name] = f.StringValue()
 		}
 	}
+
+	if len(fields) < len(factory.fields) {
+		for k, _ := range factory.fields {
+			lbs[k] = ""
+		}
+	}
+
 	return lbs
 }
 
