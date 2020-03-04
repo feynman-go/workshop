@@ -191,7 +191,9 @@ func (factory *PromFactory) buildLabel(name string, err error, fields []record.F
 
 	if len(fields) < len(factory.fields) {
 		for k, _ := range factory.fields {
-			lbs[k] = ""
+			if _, ext := lbs[k]; !ext {
+				lbs[k] = ""
+			}
 		}
 	}
 
