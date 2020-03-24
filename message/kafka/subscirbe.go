@@ -207,6 +207,10 @@ type messageReader struct {
 }
 
 func (reader *messageReader) read(ctx context.Context) (message.InputMessage, error) {
+	rr := reader.reader
+	rr.Stats()
+
+
 	msg, err := reader.reader.FetchMessage(ctx)
 	if err != nil {
 		return message.InputMessage{}, err

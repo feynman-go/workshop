@@ -55,6 +55,20 @@ func (tb *Table) Clear() {
 	tb.ll = list.New()
 }
 
+func (tb *Table) Keys() []Key {
+	now := time.Now()
+	tb.rw.RLock()
+	defer tb.rw.RUnlock()
+
+	var ks = make([]Key, 0, len(tb.mp))
+	for key, v := range tb.mp {
+		if !v.Value.(*container).IsTimeout(now) {
+			ks = append(ks, key)
+		}
+	}
+	return ks
+}
+
 func (tb *Table) Get(key interface{}) (interface{}, bool) {
 	now := time.Now()
 	tb.rw.Lock()
