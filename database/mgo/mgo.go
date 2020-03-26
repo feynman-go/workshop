@@ -432,7 +432,7 @@ type majorAgent struct {
 	dbOpt *options.DatabaseOptions
 	option SingleOption
 	cltOpt client.Option
-	pb *prob.Prob
+	pb *routine.Prob
 	bk *breaker.Breaker
 	logger *zap.Logger
 	rw sync.RWMutex
@@ -460,7 +460,7 @@ func NewMajorAgent(option SingleOption, logger *zap.Logger) (DbAgent, error) {
 		bk: breaker.New(false),
 		logger: logger,
 	}
-	agent.pb = prob.New(agent.run)
+	agent.pb = routine.New(agent.run)
 	agent.pb.Start()
 	return agent, nil
 }

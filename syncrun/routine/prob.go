@@ -1,4 +1,4 @@
-package prob
+package routine
 
 import (
 	"context"
@@ -14,7 +14,8 @@ const (
 	_EXPECT_STATE_DOWN     = 2
 )
 
-type Prob struct {
+// a easy manager go routine based on goroutine
+type Routine struct {
 	rw           sync.RWMutex
 	cancel       func()
 
@@ -27,8 +28,8 @@ type Prob struct {
 	//started      bool
 }
 
-func New(f func(ctx context.Context)) *Prob {
-	pb := &Prob{
+func New(f func(ctx context.Context)) *Routine {
+	pb := &Routine{
 		stopChan:   make(chan struct{}),
 		runningChan:   make(chan struct{}),
 		f:          f,
@@ -36,7 +37,7 @@ func New(f func(ctx context.Context)) *Prob {
 	return pb
 }
 
-func (prob *Prob) run() {
+func (prob *Routine) run() {
 	defer prob.didStopped()
 	runCtx, cancel := context.WithCancel(context.Background())
 	// notify update
@@ -48,7 +49,7 @@ func (prob *Prob) run() {
 	}
 }
 
-func (prob *Prob) Stop() {
+func (prob *Routine) Stop() {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
@@ -68,18 +69,18 @@ func (prob *Prob) Stop() {
 	}
 }
 
-func (prob *Prob) StopAccepted() bool {
+func (prob *Routine) StopAccepted() bool {
 	prob.rw.RLock()
 	defer prob.rw.RUnlock()
 
 	return prob.expectState == _EXPECT_STATE_DOWN
 }
 
-func (prob *Prob) Stopped() chan struct{} {
+func (prob *Routine) Stopped() chan struct{} {
 	return prob.stopChan
 }
 
-func (prob *Prob) didRunning(cancel func()) bool {
+func (prob *Routine) didRunning(cancel func()) bool {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
@@ -91,7 +92,7 @@ func (prob *Prob) didRunning(cancel func()) bool {
 	return false
 }
 
-func (prob *Prob) didStopped() {
+func (prob *Routine) didStopped() {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
@@ -104,7 +105,7 @@ func (prob *Prob) didStopped() {
 	}
 }
 
-func (prob *Prob) IsStopped() bool {
+func (prob *Routine) IsStopped() bool {
 	select {
 	case <- prob.stopChan:
 		return true
@@ -113,7 +114,7 @@ func (prob *Prob) IsStopped() bool {
 	}
 }
 
-func (prob *Prob) IsRunning() bool {
+func (prob *Routine) IsRunning() bool {
 	select {
 	case <- prob.stopChan:
 		return false
@@ -130,19 +131,19 @@ func (prob *Prob) IsRunning() bool {
 	}
 }
 
-func (prob *Prob) notifyStop() {
+func (prob *Routine) notifyStop() {
 	if prob.cancel != nil {
 		prob.cancel()
 	}
 }
 
-func (prob *Prob) Running() <- chan struct{}{
+func (prob *Routine) Running() <- chan struct{}{
 	prob.rw.RLock()
 	defer prob.rw.RUnlock()
 	return prob.runningChan
 }
 
-func (prob *Prob) Start() bool {
+func (prob *Routine) Start() bool {
 	prob.rw.Lock()
 	defer prob.rw.Unlock()
 
@@ -158,7 +159,7 @@ func (prob *Prob) Start() bool {
 	return true
 }
 
-func (prob *Prob) StopAndWait(ctx context.Context) error {
+func (prob *Routine) StopAndWait(ctx context.Context) error {
 	prob.Stop()
 	prob.rw.Lock()
 	prob.rw.Unlock()
@@ -171,7 +172,7 @@ func (prob *Prob) StopAndWait(ctx context.Context) error {
 	}
 }
 
-func (prob *Prob) StopAndWaitDuration(duration time.Duration) error {
+func (prob *Routine) StopAndWaitDuration(duration time.Duration) error {
 	prob.Stop()
 	select {
 	case <- time.After(duration):
@@ -182,7 +183,7 @@ func (prob *Prob) StopAndWaitDuration(duration time.Duration) error {
 }
 
 
-func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) bool {
+func RunSync(ctx context.Context, prob *Routine, f func(ctx context.Context)) bool {
 	select {
 	case <- prob.Stopped():
 		return false
@@ -214,12 +215,12 @@ func RunSync(ctx context.Context, prob *Prob, f func(ctx context.Context)) bool 
 
 }
 
-func WrapCloser(pb *Prob) richclose.WithContextCloser {
+func WrapCloser(pb *Routine) richclose.WithContextCloser {
 	return closer{pb}
 }
 
 type closer struct {
-	pb *Prob
+	pb *Routine
 }
 
 func (c closer) CloseWithContext(ctx context.Context) error{

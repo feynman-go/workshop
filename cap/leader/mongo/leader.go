@@ -24,7 +24,7 @@ type Elector struct {
 	docTooLaterDuration time.Duration
 	cn                  chan electorDoc
 	resumeTimestamp     primitive.Timestamp
-	pb 					*prob.Prob
+	pb 					*routine.Prob
 }
 
 func NewElector(key interface{}, col string, database *mgo.DbClient, docTooLaterDuration time.Duration) *Elector {
@@ -35,7 +35,7 @@ func NewElector(key interface{}, col string, database *mgo.DbClient, docTooLater
 		docTooLaterDuration: docTooLaterDuration,
 		cn:                  make(chan electorDoc, 32),
 	}
-	elector.pb = prob.New(elector.run)
+	elector.pb = routine.New(elector.run)
 	elector.pb.Start()
 	return elector
 }

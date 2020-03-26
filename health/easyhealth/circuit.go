@@ -9,7 +9,7 @@ import (
 )
 
 func StartCircuitReport(cc *circuit.Circuit, reporter *health.StatusReporter) richclose.WithContextCloser {
-	pb := prob.New(func(ctx context.Context) {
+	pb := routine.New(func(ctx context.Context) {
 		defer func() {
 			reporter.ReportStatus("", health.StatusDown)
 		}()
@@ -29,6 +29,6 @@ func StartCircuitReport(cc *circuit.Circuit, reporter *health.StatusReporter) ri
 	})
 
 	pb.Start()
-	return prob.WrapCloser(pb)
+	return routine.WrapCloser(pb)
 }
 

@@ -68,7 +68,7 @@ type Subscriber struct {
 	mx           *mutex.Mutex
 	readerConfig kafka.ReaderConfig
 	opt          SubscribeOption
-	pb           *prob.Prob
+	pb           *routine.Prob
 	c 			 chan message.InputMessage
 }
 
@@ -84,7 +84,7 @@ func NewKafkaSubscriber(option SubscribeOption) (*Subscriber, error) {
 		opt:          option,
 		c: 			  make(chan message.InputMessage, 1),
 	}
-	reader.pb = prob.New(reader.runLoop)
+	reader.pb = routine.New(reader.runLoop)
 	reader.pb.Start()
 	return reader, nil
 }

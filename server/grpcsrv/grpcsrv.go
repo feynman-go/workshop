@@ -18,7 +18,7 @@ type GrpcLauncher struct {
 	listenerAddr   string
 	server         *grpc.Server
 	rw             sync.RWMutex
-	pb             *prob.Prob
+	pb             *routine.Prob
 	statusReporter *health.StatusReporter
 	logger *zap.Logger
 }
@@ -42,7 +42,7 @@ func (r *GrpcLauncher) Start() error {
 		return errors.New("err")
 	}
 
-	r.pb = prob.New(r.runLoop)
+	r.pb = routine.New(r.runLoop)
 	r.pb.Start()
 	return nil
 }

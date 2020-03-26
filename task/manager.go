@@ -62,7 +62,7 @@ type Manager struct {
 	executor  Executor
 	scheduler Scheduler
 	ws        *runnerStore
-	pb        *prob.Prob
+	pb        *routine.Prob
 	option    ManagerOption
 }
 
@@ -394,7 +394,7 @@ func (svc *Manager) CloseWithContext(ctx context.Context) error {
 }
 
 func (svc *Manager) start(ctx context.Context) {
-	pb := prob.New(syncrun.FuncWithReStart(func(ctx context.Context) bool {
+	pb := routine.New(syncrun.FuncWithReStart(func(ctx context.Context) bool {
 		err := svc.runScheduler(ctx)
 		if err != nil {
 			log.Println("run scheduler err:", err)
@@ -439,7 +439,7 @@ func (store *runnerStore) delete(ctx context.Context, taskKey string) {
 
 type runner struct {
 	rw          sync.RWMutex
-	executor    *prob.Prob
+	executor    *routine.Prob
 }
 
 func (warp *runner) close(ctx context.Context) {
@@ -459,7 +459,7 @@ func (warp *runner) StartExec(ctx context.Context, probFunc func(ctx context.Con
 	defer warp.rw.Unlock()
 
 	old := warp.executor
-	warp.executor = prob.New(func(ctx context.Context) {
+	warp.executor = routine.New(func(ctx context.Context) {
 		probFunc(ctx)
 	})
 	if old != nil && !old.IsStopped() {

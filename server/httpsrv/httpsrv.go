@@ -20,7 +20,7 @@ type LaunchOption struct {
 
 type Launcher struct {
 	srv *http.Server
-	pb *prob.Prob
+	pb *routine.Prob
 	logger *zap.Logger
 	closeDuration time.Duration
 	healthReporter *health.StatusReporter
@@ -38,7 +38,7 @@ func New(server *http.Server, opt LaunchOption) *Launcher {
 		healthReporter: opt.HealthReporter,
 		name: opt.ServerName,
 	}
-	srv.pb = prob.New(srv.run)
+	srv.pb = routine.New(srv.run)
 	return srv
 }
 

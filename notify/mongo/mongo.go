@@ -60,7 +60,7 @@ type Parser func(ctx context.Context, raw bson.Raw) (*NotifyInfo, error)
 
 type MessageStream struct {
 	query bson.D
-	pb *prob.Prob
+	pb *routine.Prob
 	dbClient *mgo.DbClient
 	col string
 	parser Parser

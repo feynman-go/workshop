@@ -9,7 +9,7 @@ import (
 )
 
 func StartBreakerReport(bk *breaker.Breaker, reporter *health.StatusReporter) richclose.WithContextCloser {
-	pb := prob.New(func(ctx context.Context) {
+	pb := routine.New(func(ctx context.Context) {
 		for ctx.Err() == nil {
 			select {
 			case <- bk.OnChan():
@@ -29,5 +29,5 @@ func StartBreakerReport(bk *breaker.Breaker, reporter *health.StatusReporter) ri
 	})
 
 	pb.Start()
-	return prob.WrapCloser(pb)
+	return routine.WrapCloser(pb)
 }

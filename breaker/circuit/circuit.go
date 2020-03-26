@@ -47,7 +47,7 @@ const (
 )
 
 type Circuit struct {
-	pb *prob.Prob
+	pb *routine.Prob
 	trigger Trigger
 
 	rw sync.RWMutex
@@ -65,7 +65,7 @@ func New(trigger Trigger) *Circuit {
 		status:        STATUS_OPEN,
 		statusUpdated: make(chan struct{}),
 	}
-	c.pb = prob.New(c.runLoop)
+	c.pb = routine.New(c.runLoop)
 	c.pb.Start()
 	<- c.pb.Running()
 	return c

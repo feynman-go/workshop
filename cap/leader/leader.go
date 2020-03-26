@@ -28,7 +28,7 @@ type Member struct {
 	electFactory ElectionFactory
 	tasks        *task.Manager
 	option       Option
-	pb             *prob.Prob
+	pb             *routine.Prob
 	onFollowerChan chan struct{}
 	onLeaderChan   chan struct{}
 	inited bool
@@ -269,7 +269,7 @@ func (mb *Member) Start() bool {
 	if mb.pb != nil {
 		return false
 	} else {
-		mb.pb = prob.New(syncrun.FuncWithReStart(func(ctx context.Context) bool {
+		mb.pb = routine.New(syncrun.FuncWithReStart(func(ctx context.Context) bool {
 			err := mb.resetTask(ctx)
 			if err != nil {
 				return true

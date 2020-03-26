@@ -38,7 +38,7 @@ type Acker interface {
 }
 
 type Router struct {
-	pb     *prob.Prob
+	pb     *routine.Prob
 	logger *zap.Logger
 	topics map[string]*subscribeJoint
 	middles []Middle
@@ -57,7 +57,7 @@ func NewRouter(option RouterOption, subs ...Subscriber) (*Router, error) {
 		ret.topics[sub.Topic()] = &subscribeJoint{sub: sub}
 	}
 
-	ret.pb = prob.New(ret.run)
+	ret.pb = routine.New(ret.run)
 	ret.middles = option.Middles
 	return ret, nil
 }

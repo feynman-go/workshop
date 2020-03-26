@@ -20,7 +20,7 @@ const (
 
 // not multi goroutine safe
 type Iterator struct {
-	pb        *prob.Prob
+	pb        *routine.Prob
 	stream    OutputStream
 	option    Option
 	queue 	*Queue
@@ -44,7 +44,7 @@ func NewIterator(stream OutputStream, option Option) *Iterator {
 		stream:    stream,
 		queue: NewQueue(option.MaxQueueCount),
 	}
-	ret.pb = prob.New(ret.run)
+	ret.pb = routine.New(ret.run)
 	ret.pb.Start()
 	return ret
 }

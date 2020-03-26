@@ -50,7 +50,7 @@ type TaskScheduler struct {
 	rw            sync.RWMutex
 	timers        map[string]*timerInfo
 	ch            chan taskDoc
-	pb            *prob.Prob
+	pb            *routine.Prob
 	hashPartition func(taskKey string) int16
 	lastWatchTime primitive.Timestamp
 	inited        bool
@@ -65,7 +65,7 @@ func NewTaskScheduler(database *mgo.DbClient, col string, partID int16, hashPart
 		hashPartition: hashPartition,
 		partID: partID,
 	}
-	scheduler.pb = prob.New(scheduler.run)
+	scheduler.pb = routine.New(scheduler.run)
 	scheduler.pb.Start()
 	return scheduler
 }

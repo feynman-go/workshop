@@ -70,7 +70,7 @@ type Window struct {
 	current       Whiteboard
 	needTrigger   bool
 	acceptor      Acceptor
-	pb            *prob.Prob
+	pb            *routine.Prob
 	triggerChan   chan struct{}
 	mx            *mutex.Mutex
 	materializer  Materializer
@@ -101,7 +101,7 @@ func New(ag Acceptor, materializer Materializer, wraps ...Wrapper) *Window {
 		},
 		materializer: materializer,
 	}
-	wd.pb = prob.New(wd.runTriggerHandler)
+	wd.pb = routine.New(wd.runTriggerHandler)
 	ag.Reset(wd.current)
 	wd.pb.Start()
 	return wd
@@ -109,7 +109,7 @@ func New(ag Acceptor, materializer Materializer, wraps ...Wrapper) *Window {
 
 func (w *Window) Accept(ctx context.Context, input interface{}) error {
 	var retErr error
-	runSync := prob.RunSync(ctx, w.pb, func(ctx context.Context) {
+	runSync := routine.RunSync(ctx, w.pb, func(ctx context.Context) {
 		if w.mx.HoldForRead(ctx) {
 			defer w.mx.ReleaseForRead()
 
@@ -184,7 +184,7 @@ func (w *Window) Current(ctx context.Context) (Whiteboard, bool) {
 func (w *Window) handleTriggerOn(ctx context.Context, seq uint64, canRetry bool) bool {
 	var ok bool
 
-	prob.RunSync(ctx, w.pb, func(ctx context.Context) {
+	routine.RunSync(ctx, w.pb, func(ctx context.Context) {
 		if seq < w.current.Seq {
 			ok = false
 			return

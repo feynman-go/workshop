@@ -100,7 +100,7 @@ func (store NodeGroupStore) SaveNodes(ctx context.Context, group *cluster.NodeGr
 
 type NodeMessageQueue struct {
 	messages chan cluster.NodeMessage
-	pb       *prob.Prob
+	pb       *routine.Prob
 	client   *mgo.DbClient
 }
 
@@ -109,7 +109,7 @@ func NewNodeEventQueue(client *mgo.DbClient) *NodeMessageQueue {
 		messages: make(chan cluster.NodeMessage, 1),
 		client: client,
 	}
-	queue.pb = prob.New(func(ctx context.Context) {
+	queue.pb = routine.New(func(ctx context.Context) {
 		for ctx.Err() == nil {
 			err := queue.runWatcher(ctx)
 			if err != nil {
@@ -236,7 +236,7 @@ func (store *NodeMessageQueue) runWatcher(ctx context.Context) error {
 type ScheduleQueue struct {
 	nodeID string
 	client *mgo.DbClient
-	pb *prob.Prob
+	pb *routine.Prob
 	events chan *cluster.NodeScheduleEvent
 }
 
@@ -246,7 +246,7 @@ func NewScheduleQueue(nodeID string, client *mgo.DbClient) *ScheduleQueue {
 		nodeID: nodeID,
 		events: make(chan *cluster.NodeScheduleEvent, 1),
 	}
-	queue.pb = prob.New(func(ctx context.Context) {
+	queue.pb = routine.New(func(ctx context.Context) {
 		for ctx.Err() == nil {
 			err := queue.runWatcher(ctx)
 			if err != nil {

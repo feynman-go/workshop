@@ -34,7 +34,7 @@ type Cluster struct {
 	records         record.Factory
 	schedulers      Scheduler
 	seq             int64
-	pb              *prob.Prob
+	pb              *routine.Prob
 	rw              sync.RWMutex
 	observer        *NodeObserver
 }
@@ -58,7 +58,7 @@ func New(
 		},
 	}
 
-	cluster.pb = prob.New(cluster.run)
+	cluster.pb = routine.New(cluster.run)
 	cluster.pb.Start()
 	return cluster
 }

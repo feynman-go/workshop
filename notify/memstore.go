@@ -84,7 +84,7 @@ type MemoMessageStream struct {
 	rw sync.RWMutex
 	ll *skiplist.SkipList
 	index uint64
-	pb *prob.Prob
+	pb *routine.Prob
 	table map[*MemoCursor]bool
 }
 
@@ -95,7 +95,7 @@ func NewMemoMessageStream() *MemoMessageStream {
 		index: 0,
 		table: map[*MemoCursor]bool{},
 	}
-	stream.pb = prob.New(stream.run)
+	stream.pb = routine.New(stream.run)
 	stream.pb.Start()
 	stream.table = map[*MemoCursor]bool{}
 	return stream
