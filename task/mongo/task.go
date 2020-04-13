@@ -4,7 +4,7 @@ import (
 	"context"
 	"github.com/feynman-go/workshop/database/mgo"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/feynman-go/workshop/task"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
@@ -50,7 +50,7 @@ type TaskScheduler struct {
 	rw            sync.RWMutex
 	timers        map[string]*timerInfo
 	ch            chan taskDoc
-	pb            *routine.Prob
+	pb            *routine.Routine
 	hashPartition func(taskKey string) int16
 	lastWatchTime primitive.Timestamp
 	inited        bool

@@ -2,7 +2,7 @@ package routine
 
 import (
 	"context"
-	"github.com/feynman-go/workshop/richclose"
+	"github.com/feynman-go/workshop/closes"
 	"github.com/pkg/errors"
 	"sync"
 	"time"
@@ -37,90 +37,90 @@ func New(f func(ctx context.Context)) *Routine {
 	return pb
 }
 
-func (prob *Routine) run() {
-	defer prob.didStopped()
+func (r *Routine) run() {
+	defer r.didStopped()
 	runCtx, cancel := context.WithCancel(context.Background())
 	// notify update
-	if !prob.didRunning(cancel) {
+	if !r.didRunning(cancel) {
 		return
 	}
-	if prob.f != nil {
-		prob.f(runCtx)
+	if r.f != nil {
+		r.f(runCtx)
 	}
 }
 
-func (prob *Routine) Stop() {
-	prob.rw.Lock()
-	defer prob.rw.Unlock()
+func (r *Routine) Stop() {
+	r.rw.Lock()
+	defer r.rw.Unlock()
 
-	switch prob.expectState {
+	switch r.expectState {
 	case _EXPECT_STATE_INIT, _EXPECT_STATE_UP:
-		prob.notifyStop()
-		prob.expectState = _EXPECT_STATE_DOWN
+		r.notifyStop()
+		r.expectState = _EXPECT_STATE_DOWN
 
 		select {
 		// 还未开始
-		case <- prob.runningChan:
+		case <- r.runningChan:
 		default:
-			close(prob.stopChan)
+			close(r.stopChan)
 		}
 
 	case _EXPECT_STATE_DOWN:
 	}
 }
 
-func (prob *Routine) StopAccepted() bool {
-	prob.rw.RLock()
-	defer prob.rw.RUnlock()
+func (r *Routine) StopAccepted() bool {
+	r.rw.RLock()
+	defer r.rw.RUnlock()
 
-	return prob.expectState == _EXPECT_STATE_DOWN
+	return r.expectState == _EXPECT_STATE_DOWN
 }
 
-func (prob *Routine) Stopped() chan struct{} {
-	return prob.stopChan
+func (r *Routine) Stopped() chan struct{} {
+	return r.stopChan
 }
 
-func (prob *Routine) didRunning(cancel func()) bool {
-	prob.rw.Lock()
-	defer prob.rw.Unlock()
+func (r *Routine) didRunning(cancel func()) bool {
+	r.rw.Lock()
+	defer r.rw.Unlock()
 
-	if prob.expectState == _EXPECT_STATE_UP {
-		prob.cancel = cancel
-		close(prob.runningChan)
+	if r.expectState == _EXPECT_STATE_UP {
+		r.cancel = cancel
+		close(r.runningChan)
 		return true
 	}
 	return false
 }
 
-func (prob *Routine) didStopped() {
-	prob.rw.Lock()
-	defer prob.rw.Unlock()
+func (r *Routine) didStopped() {
+	r.rw.Lock()
+	defer r.rw.Unlock()
 
-	prob.cancel = nil
+	r.cancel = nil
 
 	select {
-	case <- prob.stopChan:
+	case <- r.stopChan:
 	default:
-		close(prob.stopChan)
+		close(r.stopChan)
 	}
 }
 
-func (prob *Routine) IsStopped() bool {
+func (r *Routine) IsStopped() bool {
 	select {
-	case <- prob.stopChan:
+	case <- r.stopChan:
 		return true
 	default:
 		return false
 	}
 }
 
-func (prob *Routine) IsRunning() bool {
+func (r *Routine) IsRunning() bool {
 	select {
-	case <- prob.stopChan:
+	case <- r.stopChan:
 		return false
-	case <- prob.runningChan:
+	case <- r.runningChan:
 		select {
-		case <- prob.stopChan:
+		case <- r.stopChan:
 			return false
 		default:
 			return true
@@ -131,26 +131,26 @@ func (prob *Routine) IsRunning() bool {
 	}
 }
 
-func (prob *Routine) notifyStop() {
-	if prob.cancel != nil {
-		prob.cancel()
+func (r *Routine) notifyStop() {
+	if r.cancel != nil {
+		r.cancel()
 	}
 }
 
-func (prob *Routine) Running() <- chan struct{}{
-	prob.rw.RLock()
-	defer prob.rw.RUnlock()
-	return prob.runningChan
+func (r *Routine) Running() <- chan struct{}{
+	r.rw.RLock()
+	defer r.rw.RUnlock()
+	return r.runningChan
 }
 
-func (prob *Routine) Start() bool {
-	prob.rw.Lock()
-	defer prob.rw.Unlock()
+func (r *Routine) Start() bool {
+	r.rw.Lock()
+	defer r.rw.Unlock()
 
-	switch prob.expectState {
+	switch r.expectState {
 	case _EXPECT_STATE_INIT:
-		prob.expectState = _EXPECT_STATE_UP
-		go prob.run()
+		r.expectState = _EXPECT_STATE_UP
+		go r.run()
 	case _EXPECT_STATE_UP:
 		return false
 	case _EXPECT_STATE_DOWN:
@@ -159,25 +159,25 @@ func (prob *Routine) Start() bool {
 	return true
 }
 
-func (prob *Routine) StopAndWait(ctx context.Context) error {
-	prob.Stop()
-	prob.rw.Lock()
-	prob.rw.Unlock()
+func (r *Routine) StopAndWait(ctx context.Context) error {
+	r.Stop()
+	r.rw.Lock()
+	r.rw.Unlock()
 
 	select {
 	case <- ctx.Done():
 		return ctx.Err()
-	case <- prob.Stopped():
+	case <- r.Stopped():
 		return nil
 	}
 }
 
-func (prob *Routine) StopAndWaitDuration(duration time.Duration) error {
-	prob.Stop()
+func (r *Routine) StopAndWaitDuration(duration time.Duration) error {
+	r.Stop()
 	select {
 	case <- time.After(duration):
 		return errors.New("stop timeout")
-	case <- prob.Stopped():
+	case <- r.Stopped():
 		return nil
 	}
 }
@@ -215,7 +215,7 @@ func RunSync(ctx context.Context, prob *Routine, f func(ctx context.Context)) bo
 
 }
 
-func WrapCloser(pb *Routine) richclose.WithContextCloser {
+func WrapCloser(pb *Routine) closes.WithContextCloser {
 	return closer{pb}
 }
 

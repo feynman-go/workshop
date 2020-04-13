@@ -4,11 +4,11 @@ import (
 	"context"
 	"github.com/feynman-go/workshop/breaker"
 	"github.com/feynman-go/workshop/health"
-	"github.com/feynman-go/workshop/richclose"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/closes"
+	"github.com/feynman-go/workshop/syncrun/routine"
 )
 
-func StartBreakerReport(bk *breaker.Breaker, reporter *health.StatusReporter) richclose.WithContextCloser {
+func StartBreakerReport(bk *breaker.Breaker, reporter *health.StatusReporter) closes.WithContextCloser {
 	pb := routine.New(func(ctx context.Context) {
 		for ctx.Err() == nil {
 			select {

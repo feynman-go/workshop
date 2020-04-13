@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/feynman-go/workshop/health"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"net"
@@ -18,7 +18,7 @@ type GrpcLauncher struct {
 	listenerAddr   string
 	server         *grpc.Server
 	rw             sync.RWMutex
-	pb             *routine.Prob
+	pb             *routine.Routine
 	statusReporter *health.StatusReporter
 	logger *zap.Logger
 }

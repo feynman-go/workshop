@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/feynman-go/workshop/cap/cluster"
 	"github.com/feynman-go/workshop/database/mgo"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -100,7 +100,7 @@ func (store NodeGroupStore) SaveNodes(ctx context.Context, group *cluster.NodeGr
 
 type NodeMessageQueue struct {
 	messages chan cluster.NodeMessage
-	pb       *routine.Prob
+	pb       *routine.Routine
 	client   *mgo.DbClient
 }
 
@@ -236,7 +236,7 @@ func (store *NodeMessageQueue) runWatcher(ctx context.Context) error {
 type ScheduleQueue struct {
 	nodeID string
 	client *mgo.DbClient
-	pb *routine.Prob
+	pb *routine.CloseWithContext
 	events chan *cluster.NodeScheduleEvent
 }
 

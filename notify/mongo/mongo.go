@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/feynman-go/workshop/database/mgo"
 	"github.com/feynman-go/workshop/notify"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -60,7 +60,7 @@ type Parser func(ctx context.Context, raw bson.Raw) (*NotifyInfo, error)
 
 type MessageStream struct {
 	query bson.D
-	pb *routine.Prob
+	pb *routine.Routine
 	dbClient *mgo.DbClient
 	col string
 	parser Parser

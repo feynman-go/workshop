@@ -1,4 +1,4 @@
-package richclose
+package closes
 
 import (
 	"context"

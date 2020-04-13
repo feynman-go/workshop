@@ -6,7 +6,7 @@ import (
 	"github.com/feynman-go/workshop/queue"
 	"github.com/feynman-go/workshop/record"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"log"
 	"net/textproto"
 	"sync"
@@ -34,7 +34,7 @@ type Cluster struct {
 	records         record.Factory
 	schedulers      Scheduler
 	seq             int64
-	pb              *routine.Prob
+	pb              *routine.Routine
 	rw              sync.RWMutex
 	observer        *NodeObserver
 }

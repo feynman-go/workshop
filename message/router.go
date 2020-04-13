@@ -7,7 +7,8 @@ import (
 	"github.com/feynman-go/workshop/record"
 	"github.com/feynman-go/workshop/record/easyrecord"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/CloseWithContext"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
@@ -38,7 +39,7 @@ type Acker interface {
 }
 
 type Router struct {
-	pb     *routine.Prob
+	pb     *routine.Routine
 	logger *zap.Logger
 	topics map[string]*subscribeJoint
 	middles []Middle

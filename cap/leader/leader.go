@@ -3,7 +3,7 @@ package leader
 import (
 	"context"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/feynman-go/workshop/task"
 	"log"
 	"math/rand"
@@ -28,7 +28,7 @@ type Member struct {
 	electFactory ElectionFactory
 	tasks        *task.Manager
 	option       Option
-	pb             *routine.Prob
+	pb             *routine.Routine
 	onFollowerChan chan struct{}
 	onLeaderChan   chan struct{}
 	inited bool
@@ -351,6 +351,7 @@ type Elector interface {
 	KeepLive(ctx context.Context, keepLive KeepLive) error
 	WaitElectionNotify(ctx context.Context) (Election, error)
 }
+
 
 type ElectionFactory interface {
 	NewElection(ctx context.Context, sequence int64) (Election, error)

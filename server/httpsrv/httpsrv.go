@@ -5,7 +5,7 @@ import (
 	"errors"
 	"github.com/feynman-go/workshop/health"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"go.uber.org/zap"
 	"net/http"
 	"time"
@@ -20,7 +20,7 @@ type LaunchOption struct {
 
 type Launcher struct {
 	srv *http.Server
-	pb *routine.Prob
+	pb *routine.Routine
 	logger *zap.Logger
 	closeDuration time.Duration
 	healthReporter *health.StatusReporter

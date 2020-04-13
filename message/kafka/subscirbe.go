@@ -8,7 +8,7 @@ import (
 	"github.com/feynman-go/workshop/message"
 	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/record"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"github.com/segmentio/kafka-go"
 	"golang.org/x/time/rate"
@@ -68,7 +68,7 @@ type Subscriber struct {
 	mx           *mutex.Mutex
 	readerConfig kafka.ReaderConfig
 	opt          SubscribeOption
-	pb           *routine.Prob
+	pb           *routine.Routine
 	c 			 chan message.InputMessage
 }
 

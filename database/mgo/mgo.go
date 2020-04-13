@@ -10,8 +10,8 @@ import (
 	"github.com/feynman-go/workshop/health/easyhealth"
 	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/record"
-	"github.com/feynman-go/workshop/richclose"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/closes"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -36,10 +36,10 @@ type DbAgent interface {
 }
 
 type DbClient struct {
-	clt *client.Client
-	dbAgent DbAgent
-	mx *mutex.Mutex
-	reporterCloser richclose.WithContextCloser
+	clt            *client.Client
+	dbAgent        DbAgent
+	mx             *mutex.Mutex
+	reporterCloser closes.WithContextCloser
 }
 
 type Option struct {
@@ -73,7 +73,7 @@ func (opt Option) AddClientMid(mid client.DoMiddle) Option {
 }
 
 func New(agent DbAgent, option Option) *DbClient {
-	var closer richclose.WithContextCloser
+	var closer closes.WithContextCloser
 	if bk := agent.GetBreaker(); bk != nil && option.StatusReporter != nil {
 		closer = easyhealth.StartBreakerReport(bk, option.StatusReporter)
 	}
@@ -432,7 +432,7 @@ type majorAgent struct {
 	dbOpt *options.DatabaseOptions
 	option SingleOption
 	cltOpt client.Option
-	pb *routine.Prob
+	pb *routine.Routine
 	bk *breaker.Breaker
 	logger *zap.Logger
 	rw sync.RWMutex

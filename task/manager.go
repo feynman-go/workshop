@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/feynman-go/workshop/promise"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"hash"
 	"hash/crc32"
@@ -62,7 +62,7 @@ type Manager struct {
 	executor  Executor
 	scheduler Scheduler
 	ws        *runnerStore
-	pb        *routine.Prob
+	pb        *routine.Routine
 	option    ManagerOption
 }
 
@@ -439,7 +439,7 @@ func (store *runnerStore) delete(ctx context.Context, taskKey string) {
 
 type runner struct {
 	rw          sync.RWMutex
-	executor    *routine.Prob
+	executor    *routine.Routine
 }
 
 func (warp *runner) close(ctx context.Context) {

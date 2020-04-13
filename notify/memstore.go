@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/MauriceGit/skiplist"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"sync"
 	"time"
@@ -84,7 +84,7 @@ type MemoMessageStream struct {
 	rw sync.RWMutex
 	ll *skiplist.SkipList
 	index uint64
-	pb *routine.Prob
+	pb *routine.Routine
 	table map[*MemoCursor]bool
 }
 

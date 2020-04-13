@@ -3,7 +3,7 @@ package circuit
 import (
 	"context"
 	"errors"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"golang.org/x/time/rate"
 	"runtime"
 	"sync"
@@ -47,7 +47,7 @@ const (
 )
 
 type Circuit struct {
-	pb *routine.Prob
+	pb *routine.Routine
 	trigger Trigger
 
 	rw sync.RWMutex

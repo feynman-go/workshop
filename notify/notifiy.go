@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"context"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"log"
 	"sync"
@@ -20,7 +20,7 @@ const (
 
 // not multi goroutine safe
 type Iterator struct {
-	pb        *routine.Prob
+	pb        *routine.Routine
 	stream    OutputStream
 	option    Option
 	queue 	*Queue

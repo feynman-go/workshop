@@ -3,7 +3,7 @@ package window
 import (
 	"context"
 	"github.com/feynman-go/workshop/mutex"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"sync"
 	"time"
@@ -70,7 +70,7 @@ type Window struct {
 	current       Whiteboard
 	needTrigger   bool
 	acceptor      Acceptor
-	pb            *routine.Prob
+	pb            *routine.Routine
 	triggerChan   chan struct{}
 	mx            *mutex.Mutex
 	materializer  Materializer

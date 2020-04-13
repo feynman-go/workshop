@@ -6,7 +6,7 @@ import (
 	"github.com/feynman-go/workshop/cap/leader"
 	"github.com/feynman-go/workshop/database/mgo"
 	"github.com/feynman-go/workshop/syncrun"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/syncrun/routine"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -24,7 +24,7 @@ type Elector struct {
 	docTooLaterDuration time.Duration
 	cn                  chan electorDoc
 	resumeTimestamp     primitive.Timestamp
-	pb 					*routine.Prob
+	pb 					*routine.Routine
 }
 
 func NewElector(key interface{}, col string, database *mgo.DbClient, docTooLaterDuration time.Duration) *Elector {

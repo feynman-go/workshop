@@ -7,8 +7,7 @@ type OutputMessage struct {
 }
 
 type Message struct {
-	UID       string
-	Partition int64
+	Key 	  string
 	PayLoad   []byte
 	Head      map[string]string
 }

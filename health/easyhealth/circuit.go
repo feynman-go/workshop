@@ -4,11 +4,11 @@ import (
 	"context"
 	"github.com/feynman-go/workshop/breaker/circuit"
 	"github.com/feynman-go/workshop/health"
-	"github.com/feynman-go/workshop/richclose"
-	"github.com/feynman-go/workshop/syncrun/prob"
+	"github.com/feynman-go/workshop/closes"
+	"github.com/feynman-go/workshop/syncrun/routine"
 )
 
-func StartCircuitReport(cc *circuit.Circuit, reporter *health.StatusReporter) richclose.WithContextCloser {
+func StartCircuitReport(cc *circuit.Circuit, reporter *health.StatusReporter) closes.WithContextCloser {
 	pb := routine.New(func(ctx context.Context) {
 		defer func() {
 			reporter.ReportStatus("", health.StatusDown)
