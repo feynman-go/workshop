@@ -6,20 +6,18 @@ import (
 	"github.com/feynman-go/workshop/breaker"
 	"github.com/feynman-go/workshop/client"
 	"github.com/feynman-go/workshop/client/richclient"
+	"github.com/feynman-go/workshop/closes"
 	"github.com/feynman-go/workshop/health"
 	"github.com/feynman-go/workshop/health/easyhealth"
 	"github.com/feynman-go/workshop/mutex"
 	"github.com/feynman-go/workshop/record"
-	"github.com/feynman-go/workshop/closes"
 	"github.com/feynman-go/workshop/syncrun/routine"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	"go.uber.org/zap"
 	"runtime"
 	"sync"
@@ -450,10 +448,7 @@ func NewMajorAgent(option SingleOption, logger *zap.Logger) (DbAgent, error) {
 		return nil, err
 	}
 
-	dbOpt := options.Database().
-		SetReadConcern(readconcern.Majority()).
-		SetWriteConcern(writeconcern.New(writeconcern.WMajority()))
-
+	dbOpt := options.Database()
 	agent := &majorAgent{
 		dbOpt: dbOpt,
 		option: option,
